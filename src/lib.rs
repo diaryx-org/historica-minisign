@@ -52,6 +52,11 @@ pub mod layout;
 pub mod trust;
 pub mod verify;
 
+#[cfg(feature = "sign")]
+pub mod key;
+#[cfg(feature = "sign")]
+pub mod sign;
+
 pub use claim::{Claim, ClaimError, Key, Role};
 pub use trust::Trust;
 pub use verify::{Finding, Report, Severity};
