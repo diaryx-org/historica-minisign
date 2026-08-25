@@ -49,5 +49,7 @@
 
 pub mod claim;
 pub mod layout;
+pub mod trust;
 
 pub use claim::{Claim, ClaimError, Key, Role};
+pub use trust::Trust;
