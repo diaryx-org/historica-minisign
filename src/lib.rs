@@ -50,6 +50,8 @@
 pub mod claim;
 pub mod layout;
 pub mod trust;
+pub mod verify;
 
 pub use claim::{Claim, ClaimError, Key, Role};
 pub use trust::Trust;
+pub use verify::{Finding, Report, Severity};
