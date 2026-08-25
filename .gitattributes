@@ -1,0 +1,6 @@
+# A claim's bytes are what a signature covers, and a signature is text with a
+# base64 body. Git must not touch the line endings of either, on any platform:
+# a claim rewritten with CRLF is a claim whose signature no longer verifies and
+# whose filename no longer states its digest.
+*.claim.txt -text
+*.minisig -text

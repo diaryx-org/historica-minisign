@@ -1,0 +1,78 @@
+[package]
+name = "historica-sign"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Signed claims that vouch for Historica revisions"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/historica-sign"
+# What a person searching crates.io would type. They arrive holding a store
+# whose `author` lines nothing checks, so `historica` and `version-control` are
+# the shelf; `minisign` and `signing` are the errand; `trust` is the question
+# underneath it — decision 0046 of historica is "who vouches for a revision".
+keywords = ["historica", "minisign", "signing", "version-control", "trust"]
+categories = ["development-tools", "command-line-utilities", "cryptography"]
+
+# `xtask` is historica-sign's CI, as a program, exactly as it is in historica
+# and historica-git: `cargo xtask <job>` runs one CI job and the workflow runs
+# nothing else.
+[workspace]
+members = ["xtask"]
+
+# One `version = "…"` line for the whole repository, which is what `cargo xtask
+# bump` rewrites and what the package inherits.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Minimum supported Rust version, enforced by the `msrv` CI job, which reads
+# this value. It cannot go below historica's own floor.
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/diaryx-org/historica-sign"
+
+# `verify` is the half that has to be cheap to depend on. Historica's decision
+# 0046 defers enforcement at `receive` — a store refusing history no trusted key
+# vouches for — and names it as the one integration this design cannot deliver
+# from outside. If that is ever built, it needs to read claims and check
+# signatures, and it must not drag key generation, password prompting, or a
+# secret-key parser into a version-control core. So the default build is the
+# tool, and `default-features = false` is a library that only ever verifies:
+# `minisign-verify` and nothing else.
+[features]
+default = ["sign", "disk"]
+# Writing a claim, and the secret key that requires. `minisign` is
+# rust-minisign, the reference implementation's own crate.
+sign = ["dep:minisign"]
+# Historica's `disk` feature — the `std::fs` implementation of `Filesystem`,
+# which is what the short constructors and this crate's binary resolve to.
+# Turning it off leaves a library that reaches the store through whatever
+# filesystem its caller hands it, which is historica's decision 0025.
+disk = ["historica/disk"]
+
+# The command-line front end. `sign` because a tool that could not write a claim
+# would be a strange thing to install; `disk` because a CLI is the one caller
+# that always knows it is talking to a real filesystem.
+[[bin]]
+name = "historica-sign"
+path = "src/main.rs"
+required-features = ["sign", "disk"]
+
+[dependencies]
+# Both spellings on purpose, as in historica-git. The path is what builds:
+# historica is not on crates.io yet, so nothing else would resolve. The version
+# is what publishing needs, and states the promise this crate is written
+# against.
+#
+# What is taken from it is deliberately small — the store's revision set, the
+# filesystem seam, and the one spelling of a moment. Nothing here writes a
+# historica document, and historica's decision 0046 is why: the trust layer
+# needs nothing from the inside.
+historica = { version = "1.0", path = "../historica", default-features = false }
+# Verification, which is the operation that must work everywhere. Zero
+# dependencies of its own, which is the whole reason 0046 names it.
+minisign-verify = "0.2.5"
+# Signing. Optional because a verifier should not have to build it; see the
+# `sign` feature above.
+minisign = { version = "0.9.1", optional = true }
