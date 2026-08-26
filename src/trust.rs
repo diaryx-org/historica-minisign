@@ -219,20 +219,76 @@ impl Trust {
     }
 }
 
-/// The label a key gets when nobody chose one: twelve characters of the digest
-/// of the key's own text.
+/// The longest a label this tool chooses for itself may be.
 ///
-/// Not the key's own first characters, which is the obvious idea and a wrong
-/// one — minisign spells a key in base64, and base64 holds `/`, so one key in
-/// sixteen would name a directory that is not there. This is Historica's rule
-/// from decision 0045 reached the same way: *a label the store cannot own is
-/// the digest of the thing instead*, which is 0018's collision suffix by
-/// 0018's reasoning.
+/// Historica's decision 0006 cuts a summary at sixty characters so that a name
+/// has room for a date and an extension inside the 255 bytes every filesystem
+/// in use allows, even where it is entirely non-ASCII. A label carries neither,
+/// so sixty is already more than a person's name needs.
+const LABEL_CHARS: usize = 60;
+
+/// The label a key gets when nobody chose one: who it speaks for.
 ///
-/// A person adding a second key will want to rename these to something they
-/// recognise, and should: nothing reads a label.
-pub fn default_label(key: &Key) -> String {
-    historica::format::digest(key.as_str().as_bytes()).abbreviate(12)
+/// Decisions 0001 and 0046 both say the filename here is a label for whoever
+/// opens the folder and that nothing reads it — so it should be the one thing
+/// the person opening the folder wants to know, which is whose key it is. A
+/// digest satisfied the letter of "nothing reads it" and none of the point.
+///
+/// `who` is free text, so what comes back is scrubbed rather than trusted: the
+/// part before any `<`, with path separators and control characters turned to
+/// spaces, runs of spaces collapsed, and leading dots removed. Where nothing
+/// usable survives — a `who` of punctuation, or one that lands on the name the
+/// explanation file already has — the answer is the digest of the key's text,
+/// which is a filename whatever the key and the person are called.
+///
+/// Nothing about this has to agree with any other copy. `trust/` never crosses
+/// a store boundary, which is 0046 at length, so unlike [`crate::naming`] there
+/// is no replica to compute the same name and no `arrange` to reconcile one.
+///
+/// A label the tool chose is still only a label: renaming the file changes
+/// nothing, and two keys for one person are told apart by whatever the caller
+/// appends.
+pub fn default_label(key: &Key, who: &str) -> String {
+    let named = who.split('<').next().unwrap_or(who).trim();
+    let candidate = if named.is_empty() {
+        who.trim_matches(['<', '>']).trim()
+    } else {
+        named
+    };
+
+    let mut label = String::new();
+    let mut pending = false;
+    for character in candidate.chars().take(LABEL_CHARS) {
+        let character = match character {
+            character if character.is_control() => ' ',
+            '/' | '\\' | ':' => ' ',
+            character => character,
+        };
+        if character == ' ' {
+            // A run of spaces is one space, and a leading one is none: a name
+            // is being made, not transcribed.
+            pending = !label.is_empty();
+            continue;
+        }
+        if pending {
+            label.push(' ');
+            pending = false;
+        }
+        label.push(character);
+    }
+    // A leading dot hides the file on every Unix, and a trailing dot or space
+    // is a name Windows will not keep as written. Both are trimmed together
+    // rather than in turn, or a `who` of `../../etc/passwd` scrubs to a space
+    // in front of the dots and keeps them.
+    let label = label.trim_matches(|character| character == '.' || character == ' ');
+
+    let explanation = EXPLANATION_FILE
+        .strip_suffix(TRUST_SUFFIX)
+        .unwrap_or(EXPLANATION_FILE);
+    if label.is_empty() || !is_a_label(label) || label == explanation {
+        return historica::format::digest(key.as_str().as_bytes()).abbreviate(12);
+    }
+    label.to_owned()
 }
 
 /// Whether a label is one filename.
@@ -498,18 +554,76 @@ mod tests {
         ));
     }
 
-    /// The bug this rule exists for: minisign spells a key in base64, base64
-    /// holds `/`, and a label taken from the key's own first characters is a
-    /// path one key in sixteen. Found by a test that failed one run in four.
-    #[test]
-    fn a_default_label_is_a_filename_whatever_the_key_looks_like() {
-        let key: Key = "RWR1w/Qc/pmAfGpNp/rGIihJys120vcNACuzskkIWVdxuUe3Dzk3MlLz"
+    /// A key with slashes all through it, which is the shape that made the
+    /// digest the fallback: whatever `who` turns out to be, what comes back is
+    /// one filename. Found originally by a test that failed one run in four.
+    fn slashy() -> Key {
+        "RWR1w/Qc/pmAfGpNp/rGIihJys120vcNACuzskkIWVdxuUe3Dzk3MlLz"
             .parse()
-            .expect("a key with slashes in it");
-        let label = default_label(&key);
-        assert!(is_a_label(&label), "`{label}` is not one filename");
-        assert!(!label.contains('/'));
+            .expect("a key with slashes in it")
+    }
+
+    #[test]
+    fn a_default_label_is_who_the_key_speaks_for() {
+        assert_eq!(
+            default_label(&slashy(), "Adam Harris <adam@diaryx.org>"),
+            "Adam Harris"
+        );
+        assert_eq!(default_label(&slashy(), "Adam Harris"), "Adam Harris");
+        // A run of spaces is one, and the address is not part of the name.
+        assert_eq!(
+            default_label(&slashy(), "  Adam   Harris   <adam@diaryx.org>"),
+            "Adam Harris"
+        );
+    }
+
+    /// `who` is free text, so every answer has to be one filename.
+    #[test]
+    fn a_default_label_is_a_filename_whatever_who_says() {
+        for who in [
+            "Adam/Harris",
+            "../../etc/passwd",
+            "C:\\keys\\adam",
+            ".hidden",
+            "a\u{7}b",
+        ] {
+            let label = default_label(&slashy(), who);
+            assert!(is_a_label(&label), "`{label}` from `{who}`");
+            assert!(!label.contains('/'), "`{label}` from `{who}`");
+            assert!(!label.starts_with('.'), "`{label}` from `{who}`");
+        }
+    }
+
+    /// Where nothing usable survives, the digest of the key — which is a
+    /// filename whatever the key and the person are called.
+    #[test]
+    fn a_who_that_names_nobody_falls_back_to_the_key() {
+        for who in ["", "...", "<>", "/", "   "] {
+            let label = default_label(&slashy(), who);
+            assert_eq!(label.len(), 12, "`{label}` from `{who}`");
+            assert!(
+                label.chars().all(|c| c.is_ascii_hexdigit()),
+                "`{label}` from `{who}`"
+            );
+            assert!(is_a_label(&label));
+        }
+    }
+
+    /// A `who` landing on the name the explanation file already has would make
+    /// `add` refuse for a reason nobody could see.
+    #[test]
+    fn a_who_that_names_the_explanation_falls_back_to_the_key() {
+        let label = default_label(&slashy(), "how-this-works");
+        assert_ne!(label, "how-this-works");
         assert_eq!(label.len(), 12);
+    }
+
+    /// Long enough for a name, short enough that the file still has one.
+    #[test]
+    fn a_very_long_who_is_cut() {
+        let label = default_label(&slashy(), &"x".repeat(500));
+        assert_eq!(label.chars().count(), LABEL_CHARS);
+        assert!(is_a_label(&label));
     }
 
     #[test]

@@ -637,9 +637,10 @@ fn trust_add(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
         .parse()
         .map_err(|error| Failure::usage(format!("{error}")))?;
 
-    // A label nobody chose is the digest of the key, which is a filename
-    // whatever the key looks like; see `trust::default_label`.
-    let label = label.unwrap_or_else(|| trust::default_label(&key));
+    // A label nobody chose is who the key speaks for; see
+    // `trust::default_label`.
+    let chosen = label.is_some();
+    let label = label.unwrap_or_else(|| trust::default_label(&key, &who));
     if !trust::is_a_label(&label) {
         return Err(Failure::usage(format!(
             "`{label}` is not one filename, and a label is: it holds no `/`, \
@@ -652,8 +653,17 @@ fn trust_add(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
         key: key.clone(),
         who: who.clone(),
     };
-    let path =
-        trust::add(store.filesystem(), store.root(), &label, &entry).map_err(Failure::error)?;
+    let path = match trust::add(store.filesystem(), store.root(), &label, &entry) {
+        Ok(path) => path,
+        // One person with two keys lands on one name. A label the tool chose is
+        // the tool's to make unambiguous; a label somebody typed is theirs, and
+        // being told it is taken is the right answer.
+        Err(trust::TrustError::Taken { .. }) if !chosen => {
+            let label = format!("{label} {}", naming::key_prefix(&key));
+            trust::add(store.filesystem(), store.root(), &label, &entry).map_err(Failure::error)?
+        }
+        Err(error) => return Err(Failure::error(error)),
+    };
 
     printing(|out| {
         writeln!(out, "this copy now takes {key} to be {who}")?;

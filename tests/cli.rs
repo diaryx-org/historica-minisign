@@ -429,3 +429,82 @@ fn arrange_prunes_a_duplicate_only_when_asked() {
         "{printed}"
     );
 }
+
+/// A trust entry is a file a person opens, so its default name is the person
+/// it speaks for. Nothing reads it either way — that is the point of being
+/// free to choose it.
+#[test]
+fn a_trust_entry_is_named_for_who_it_speaks_for() {
+    let directory = scratch("trust-label");
+    let folder = work(&directory);
+    let public = key(&directory);
+
+    let added = out(
+        &folder,
+        &["trust", "add", &public, "Adam Harris <adam@example.com>"],
+    );
+    assert!(added.contains("Adam Harris.txt"), "{added}");
+
+    let trust = folder.join("history").join("trust");
+    assert!(trust.join("Adam Harris.txt").exists());
+
+    let listed = out(&folder, &["trust", "list"]);
+    assert!(
+        listed.contains("Adam Harris  Adam Harris <adam@example.com>"),
+        "{listed}"
+    );
+
+    // The label is the handle `remove` takes, and it is what `list` printed.
+    out(&folder, &["trust", "remove", "Adam Harris"]);
+    assert!(!trust.join("Adam Harris.txt").exists());
+}
+
+/// One person, two keys, one name — parted by the key, and neither entry lost.
+#[test]
+fn a_second_key_for_one_person_takes_a_name_of_its_own() {
+    let directory = scratch("trust-two-keys");
+    let folder = work(&directory);
+    let first = key(&directory);
+    let password = directory.join("password");
+    let elsewhere = directory.join("other-keys");
+    let printed = out(
+        &folder,
+        &[
+            "key",
+            "new",
+            "--at",
+            elsewhere.to_str().unwrap(),
+            "--password-file",
+            password.to_str().unwrap(),
+        ],
+    );
+    let second = printed.lines().next().expect("a key").to_owned();
+
+    let who = "Adam Harris <adam@example.com>";
+    out(&folder, &["trust", "add", &first, who]);
+    let added = out(&folder, &["trust", "add", &second, who]);
+
+    let trust = folder.join("history").join("trust");
+    assert!(
+        trust.join("Adam Harris.txt").exists(),
+        "the first keeps the plain name"
+    );
+    assert!(
+        added.contains("Adam Harris "),
+        "the second is parted by the key: {added}"
+    );
+
+    let entries: Vec<PathBuf> = under(&trust)
+        .into_iter()
+        .filter(|path| !path.ends_with("how-this-works.txt"))
+        .collect();
+    assert_eq!(
+        entries.len(),
+        2,
+        "neither addition lost the other: {entries:?}"
+    );
+
+    let listed = out(&folder, &["trust", "list"]);
+    assert!(listed.contains(&first), "{listed}");
+    assert!(listed.contains(&second), "{listed}");
+}
