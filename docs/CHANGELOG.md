@@ -45,10 +45,12 @@ path.
 - **verify** — what a store's claims amount to ([`67bb241`](https://github.com/diaryx-org/historica-sign/commit/67bb241416fc35e9d58f71cbf3e4a7565e5d2711))
 - **sign** — a claim, written and signed ([`d0fc97c`](https://github.com/diaryx-org/historica-sign/commit/d0fc97cc32ca3d24913f1661ef273a410152bde4))
 - **cli** — sign, verify, trust, and key ([`82ab514`](https://github.com/diaryx-org/historica-sign/commit/82ab514373c3db17d1093b5b7dad8d8cce358fc0))
+- **trust** — a trust entry is named for whose key it is ([`b6e519e`](https://github.com/diaryx-org/historica-sign/commit/b6e519e1938bd0872d9f89ceaa9ee98ab479373c))
 
 ### Fixed
 
 - **verify** — ask the store whether it holds a digest, not for the document ([`da7b972`](https://github.com/diaryx-org/historica-sign/commit/da7b9728c5621b616986ea20d4f43a9e268573bf))
+- **naming** — a key prefix is a digest, not the key's own text ([`e282a2f`](https://github.com/diaryx-org/historica-sign/commit/e282a2f1a41ac2551de7bbba03694fd3c19ab796))
 
 ### Behavioural changes
 
@@ -63,5 +65,15 @@ path.
  fourth argument; `layout::claim_file` and `layout::signature_file` take a
  stem rather than a digest. `claim-0` is unchanged, and a signature made
  before this is still valid, because no signature ever covered a filename.
+
+- `trust add` names a new entry for the person it speaks
+ for — `history/trust/Adam Harris.txt` — rather than for twelve characters of
+ the key's digest. Nothing reads a label in either case, so entries already on
+ disk are read exactly as before under whatever they are called; what changes
+ is the name a person sees in the folder, and the label `trust list` prints
+ and `trust remove` takes. Adding a second key for one `who` now succeeds
+ under a suffixed name rather than failing as taken, unless the label was
+ given with `--label`. `trust::default_label` takes the `who` it is naming as
+ a second argument.
 
 <!-- git-cliff:end -->
