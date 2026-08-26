@@ -82,7 +82,7 @@ pub fn the_head(store: &Store) -> Result<Option<RevisionId>, Failure> {
 
 /// A revision the store holds, or a refusal saying it does not.
 fn held(store: &Store, id: RevisionId, called: &str) -> Result<RevisionId, Failure> {
-    if store.get(&id).is_some() {
+    if store.holds(&id) {
         Ok(id)
     } else {
         Err(Failure::error(format!(
@@ -119,7 +119,7 @@ fn current(store: &Store, change: ChangeId, called: &str) -> Result<RevisionId, 
 
 fn by_prefix(store: &Store, prefix: &str) -> Result<RevisionId, Failure> {
     let matches: Vec<RevisionId> = store
-        .iter()
+        .revisions()
         .map(|(id, _)| *id)
         .filter(|id| id.to_string().starts_with(prefix))
         .collect();

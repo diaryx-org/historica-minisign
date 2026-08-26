@@ -392,7 +392,7 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
             });
         }
 
-        let present = store.get(&claim.revision).is_some();
+        let present = store.holds(&claim.revision);
         if !present {
             report.findings.push(Finding::Absent {
                 path: path.clone(),

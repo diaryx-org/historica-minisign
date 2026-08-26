@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use historica::core::RevisionId;
-use historica::record::{Clock, Platform, Recording, Restriction, record};
+use historica::record::{Clock, Kinds, Platform, Recording, Restriction, record};
 use historica::store::Store;
 use historica::working::Working;
 use historica_sign::claim::{Claim, Role};
@@ -50,6 +50,7 @@ fn store_of(directory: &Path, revisions: usize) -> Store {
             at: Vec::new(),
             accepted: BTreeSet::new(),
             only: Restriction::Everything,
+            kinds: Kinds::default(),
         };
         record(&mut store, &working, &recording, &mut Platform).expect("a revision");
     }
@@ -182,8 +183,8 @@ fn vouching_for_a_middle_revision_leaves_the_head_unvouched() {
     // The oldest revision: the one everything else descends from, which is the
     // one that covers the least.
     let oldest = *store
-        .iter()
-        .find(|(_, document)| document.parents.is_empty())
+        .revisions()
+        .find(|(_, revision)| revision.parents.is_empty())
         .expect("a root")
         .0;
     vouch(&store, oldest, "author", &secret);

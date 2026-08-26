@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use historica::record::{Clock, Platform, Recording, Restriction, record};
+use historica::record::{Clock, Kinds, Platform, Recording, Restriction, record};
 use historica::store::Store;
 use historica::working::Working;
 
@@ -40,6 +40,7 @@ fn work(directory: &Path) -> PathBuf {
         at: Vec::new(),
         accepted: BTreeSet::new(),
         only: Restriction::Everything,
+        kinds: Kinds::default(),
     };
     record(&mut store, &working, &recording, &mut Platform).expect("a revision");
     fs::write(directory.join("password"), PASSWORD).expect("a password file");
