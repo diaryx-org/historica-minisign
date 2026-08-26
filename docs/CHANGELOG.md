@@ -42,4 +42,8 @@ path.
 - **sign** — a claim, written and signed ([`d0fc97c`](https://github.com/diaryx-org/historica-sign/commit/d0fc97cc32ca3d24913f1661ef273a410152bde4))
 - **cli** — sign, verify, trust, and key ([`82ab514`](https://github.com/diaryx-org/historica-sign/commit/82ab514373c3db17d1093b5b7dad8d8cce358fc0))
 
+### Fixed
+
+- **verify** — ask the store whether it holds a digest, not for the document ([`da7b972`](https://github.com/diaryx-org/historica-sign/commit/da7b9728c5621b616986ea20d4f43a9e268573bf))
+
 <!-- git-cliff:end -->
