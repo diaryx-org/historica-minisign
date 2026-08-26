@@ -34,11 +34,13 @@ use historica::naming::stems as revision_stems;
 
 use crate::claim::{Claim, Key};
 
-/// Characters of a public key where a name needs one to tell two apart.
+/// Characters of a key's digest where a name needs one to tell two apart.
 ///
-/// A minisign key begins `RW` and an algorithm character, so this is fewer
-/// distinguishing characters than it looks — which is why it is a tier and not
-/// the answer. Where it is not enough, the claim's own digest is.
+/// Of the *digest*, and never of the key's own text, which is the obvious idea
+/// and a wrong one for the reason [`crate::trust::default_label`] gives: a
+/// minisign key is spelled in base64, base64 holds `/`, and a stem is split on
+/// `/` into the directories it names. Roughly one key in fourteen would put a
+/// path separator in this suffix and file its claim somewhere nobody asked for.
 pub const KEY_CHARS: usize = 8;
 
 /// Characters of a claim digest where nothing else tells two claims apart.
@@ -92,10 +94,7 @@ pub fn stems<'a>(
         let mut by_key: BTreeMap<String, Vec<(RevisionId, &Claim)>> = BTreeMap::new();
         for (digest, claim) in sharing {
             by_key
-                .entry(format!(
-                    "{base} {}",
-                    abbreviate(claim.key.as_str(), KEY_CHARS)
-                ))
+                .entry(format!("{base} {}", key_prefix(&claim.key)))
                 .or_default()
                 .push((digest, claim));
         }
@@ -147,7 +146,7 @@ pub fn stem_for<'a>(
     if !sharing_base {
         return mine;
     }
-    let named = format!("{mine} {}", abbreviate(claim.key.as_str(), KEY_CHARS));
+    let named = format!("{mine} {}", key_prefix(&claim.key));
     if !sharing_key {
         return named;
     }
@@ -178,15 +177,40 @@ fn prefix(when: &Timestamp, chars: usize) -> String {
     when.to_string().chars().take(chars).collect()
 }
 
-/// The leading `chars` characters of a key as it is spelled.
-fn abbreviate(key: &str, chars: usize) -> String {
-    key.chars().take(chars).collect()
+/// How a key is spelled where a filename has to tell two of them apart.
+///
+/// [`crate::trust::default_label`]'s rule, reached the same way and spelled the
+/// same: the digest of the key's text, which is hexadecimal and therefore a
+/// filename whatever the key looks like.
+pub fn key_prefix(key: &Key) -> String {
+    historica::format::digest(key.as_str().as_bytes()).abbreviate(KEY_CHARS)
 }
 
-/// Whether `key` is spelled the way [`abbreviate`] would spell it here.
-///
-/// Exposed so a caller that has a [`Key`] rather than its text can ask the same
-/// question without knowing the width.
-pub fn key_prefix(key: &Key) -> String {
-    abbreviate(key.as_str(), KEY_CHARS)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole of the bug this spelling exists to avoid: a stem is split on
+    /// `/` into the directories it names, and roughly one minisign key in
+    /// fourteen holds a `/` in its first eight characters.
+    #[test]
+    fn a_key_prefix_is_a_filename_whatever_the_key_looks_like() {
+        // A real key whose base64 spelling carries a `/`.
+        let key: Key = "RWSEi0aqcNHqmF6NSeZGrsiFldgdRbBW3ls20/H8vLJersDSm6jzVKsJ"
+            .parse()
+            .expect("a key");
+        let prefix = key_prefix(&key);
+
+        assert_eq!(prefix.len(), KEY_CHARS);
+        assert!(
+            prefix.chars().all(|c| c.is_ascii_hexdigit()),
+            "a digest and not the key's own text: {prefix}"
+        );
+        assert!(!prefix.contains('/'), "{prefix}");
+        assert_ne!(
+            prefix,
+            key.as_str().chars().take(KEY_CHARS).collect::<String>(),
+            "the key's own first characters are what this must not be"
+        );
+    }
 }
