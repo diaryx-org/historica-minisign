@@ -34,6 +34,10 @@ path.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+### Breaking
+
+- **naming** — file a claim where it can be read ([`3bec795`](https://github.com/diaryx-org/historica-sign/commit/3bec79524fc8ef0fc13d92b967602e459aee9888))
+
 ### Added
 
 - the repository, its CI, and the claim a signature covers ([`4ba95fb`](https://github.com/diaryx-org/historica-sign/commit/4ba95fb65e50746916debe46796d82573da2135f))
@@ -45,5 +49,19 @@ path.
 ### Fixed
 
 - **verify** — ask the store whether it holds a digest, not for the document ([`da7b972`](https://github.com/diaryx-org/historica-sign/commit/da7b9728c5621b616986ea20d4f43a9e268573bf))
+
+### Behavioural changes
+
+- `sign` writes claims under readable names in a month
+ directory — `claims/2026-08/2026-08-18 drop the private export —
+ author.claim.txt` — rather than `claims/<digest>.claim.txt`. Stores written
+ before this verify unchanged and every claim in them still counts, but a
+ store written after it is not readable by 0.1.0, whose `verify` reports its
+ claims as `Foreign` and counts none of them. `verify` gains two notes,
+ `Misfiled` and `Duplicate`, and `NameIsFalse` now fires only for a name that
+ is actually a digest. `sign::write` takes the stem to file under as a new
+ fourth argument; `layout::claim_file` and `layout::signature_file` take a
+ stem rather than a digest. `claim-0` is unchanged, and a signature made
+ before this is still valid, because no signature ever covered a filename.
 
 <!-- git-cliff:end -->
