@@ -12,8 +12,9 @@
 //! This is that tool. It writes two kinds of file and reads a third:
 //!
 //! - a **claim** ([`claim`]) in `history/claims/`, one key vouching for one
-//!   revision digest in one role at one moment, named by the SHA-256 of its own
-//!   bytes;
+//!   revision digest in one role at one moment, filed beside the revision it
+//!   vouches for ([`naming`]) and identified by the SHA-256 of its own bytes
+//!   rather than by what it is called;
 //! - its **signature**, minisign, detached, beside it;
 //! - the **trust policy** ([`trust`]) in `history/trust/`, one key to a file,
 //!   which says whose word this copy accepts and never crosses a store
@@ -37,7 +38,7 @@
 //! Two commands, and neither is Historica nor this crate:
 //!
 //! ```console
-//! $ minisign -Vm 4d8f….claim.txt -P RWTd8LRC…
+//! $ minisign -Vm "2026-08-18 drop the private export — author.claim.txt" -P RWTd8LRC…
 //! $ shasum -a 256 history/revisions/2026-08/….rev.txt
 //! ```
 //!
@@ -49,6 +50,7 @@
 
 pub mod claim;
 pub mod layout;
+pub mod naming;
 pub mod trust;
 pub mod verify;
 

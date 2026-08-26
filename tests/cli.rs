@@ -5,7 +5,7 @@
 //! has vouched for, which is decision 0046's deferred enforcement done from the
 //! outside, where this tool is allowed to do it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -41,6 +41,7 @@ fn work(directory: &Path) -> PathBuf {
         accepted: BTreeSet::new(),
         only: Restriction::Everything,
         kinds: Kinds::default(),
+        extensions: BTreeMap::new(),
     };
     record(&mut store, &working, &recording, &mut Platform).expect("a revision");
     fs::write(directory.join("password"), PASSWORD).expect("a password file");
@@ -271,4 +272,160 @@ fn the_usage_names_the_two_commands_that_check_a_claim_by_hand() {
     let printed = out(&folder, &["--help"]);
     assert!(printed.contains("minisign -Vm"));
     assert!(printed.contains("shasum -a 256"));
+}
+
+/// Decision 0003's migration and repair, as a person meets it: a claim under a
+/// name nobody computed is counted, told where it belongs, and moved there.
+#[test]
+fn arrange_files_a_hand_written_claim_where_it_belongs() {
+    let directory = scratch("arrange");
+    let folder = work(&directory);
+    let public = key(&directory);
+    let secret = directory.join("keys").join("minisign.key");
+    let password = directory.join("password");
+
+    out(
+        &folder,
+        &["trust", "add", &public, "Adam Harris <adam@example.com>"],
+    );
+    out(
+        &folder,
+        &[
+            "sign",
+            "--key",
+            secret.to_str().unwrap(),
+            "--password-file",
+            password.to_str().unwrap(),
+        ],
+    );
+
+    // Move the claim and its signature somewhere nobody would compute, which is
+    // exactly what a person writing one by hand produces.
+    let claims = folder.join("history").join("claims");
+    let filed = under(&claims);
+    assert_eq!(filed.len(), 2, "one claim and one signature: {filed:?}");
+    for path in &filed {
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap();
+        let moved =
+            claims.join(name.replace(name.split(".claim.txt").next().unwrap(), "a claim I wrote"));
+        fs::rename(path, &moved).expect("it moved");
+    }
+
+    let printed = out(&folder, &["verify"]);
+    assert!(
+        printed.contains("1 claim, 1 by a key this copy believes"),
+        "{printed}"
+    );
+    assert!(printed.contains("belongs at"), "{printed}");
+
+    let dry = out(&folder, &["arrange", "--dry-run"]);
+    assert!(dry.contains("would move"), "{dry}");
+    assert_eq!(under(&claims).len(), 2, "--dry-run moves nothing");
+
+    let done = out(&folder, &["arrange"]);
+    assert!(done.contains("moved"), "{done}");
+
+    let after = under(&claims);
+    assert_eq!(
+        after.len(),
+        2,
+        "still one claim and one signature: {after:?}"
+    );
+    assert!(
+        after
+            .iter()
+            .all(|path| !path.to_str().unwrap().contains("a claim I wrote")),
+        "{after:?}"
+    );
+
+    let printed = out(&folder, &["verify"]);
+    assert!(
+        printed.contains("1 claim, 1 by a key this copy believes"),
+        "{printed}"
+    );
+    assert!(
+        !printed.contains("belongs at"),
+        "arranged is arranged: {printed}"
+    );
+}
+
+/// Every file under a directory, at any depth.
+fn under(directory: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(directory) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        if entry.path().is_dir() {
+            out.extend(under(&entry.path()));
+        } else {
+            out.push(entry.path());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A duplicate is left alone unless asked about, and what `--prune` deletes is
+/// checked byte for byte first.
+#[test]
+fn arrange_prunes_a_duplicate_only_when_asked() {
+    let directory = scratch("prune");
+    let folder = work(&directory);
+    let public = key(&directory);
+    let secret = directory.join("keys").join("minisign.key");
+    let password = directory.join("password");
+
+    out(
+        &folder,
+        &["trust", "add", &public, "Adam Harris <adam@example.com>"],
+    );
+    out(
+        &folder,
+        &[
+            "sign",
+            "--key",
+            secret.to_str().unwrap(),
+            "--password-file",
+            password.to_str().unwrap(),
+        ],
+    );
+
+    // The same claim again under another name, which is what a copy that had
+    // not yet received the revision would have written.
+    let claims = folder.join("history").join("claims");
+    for path in under(&claims) {
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap();
+        let copy = claims.join(name.replace(
+            name.split(".claim.txt").next().unwrap(),
+            "the same claim twice",
+        ));
+        fs::copy(&path, &copy).expect("a duplicate");
+    }
+    assert_eq!(under(&claims).len(), 4);
+
+    let printed = out(&folder, &["verify"]);
+    assert!(
+        printed.contains("1 claim, 1 by a key this copy believes"),
+        "{printed}"
+    );
+    assert!(printed.contains("counted once"), "{printed}");
+
+    let left = out(&folder, &["arrange"]);
+    assert!(left.contains("--prune deletes"), "{left}");
+    assert_eq!(under(&claims).len(), 4, "arrange alone deletes nothing");
+
+    let pruned = out(&folder, &["arrange", "--prune"]);
+    assert!(pruned.contains("deleted"), "{pruned}");
+    assert_eq!(under(&claims).len(), 2, "one claim and one signature");
+
+    let printed = out(&folder, &["verify"]);
+    assert!(
+        printed.contains("1 claim, 1 by a key this copy believes"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("1 of 1 revisions are vouched for"),
+        "{printed}"
+    );
 }

@@ -70,7 +70,10 @@ fn a_claim_this_tool_signed_verifies_with_the_minisign_command() {
         &Platform,
     )
     .expect("a claim");
-    let written = sign::write(&Disk, &directory, &claim, &secret).expect("it written");
+    // No store here, so no revision to file beside: the stem is given
+    // directly, which is the API's shape precisely because a name is not
+    // something this layer decides.
+    let written = sign::write(&Disk, &directory, &claim, "a claim", &secret).expect("it written");
 
     let checked = run(&[
         "-V",

@@ -6,10 +6,12 @@
 //! carries, and nothing here is spelled a way that would make an artifact
 //! recognisable as this tool's rather than as minisign's.
 //!
-//! Both files are written with `create_new` and neither is ever rewritten. A
-//! claim's bytes are its name, so writing the same claim twice writes the same
-//! file — which is what makes two copies of a store union without a conflict,
-//! and what makes signing twice cost nothing.
+//! Both files are written with `create_new` and neither is ever rewritten.
+//! Decision 0003 moved the name off the digest and onto [`crate::naming`]'s
+//! scheme, and kept the property that mattered: a claim's *path* is still a
+//! function of the claim, so two copies of a store union without a conflict and
+//! signing twice still costs nothing. What changed is that the folder can be
+//! read, and that a claim can be written by hand before it has been hashed.
 
 use std::fmt;
 use std::io;
@@ -27,7 +29,7 @@ use minisign::PublicKey;
 pub use minisign::SecretKey;
 
 use crate::claim::{Claim, Key, Role};
-use crate::layout::{claim_file, claims, signature_file};
+use crate::layout::{claim_file, signature_file};
 
 /// What minisign puts in an untrusted comment, and therefore what this puts
 /// there.
@@ -40,7 +42,7 @@ const UNTRUSTED_COMMENT: &str = "signature from minisign secret key";
 /// A claim, written and signed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Signed {
-    /// The claim's digest, which is its name.
+    /// The claim's digest, which is its identity whatever it is called.
     pub digest: RevisionId,
     /// Where the claim is.
     pub claim: PathBuf,
@@ -80,11 +82,17 @@ pub fn public_key(secret: &SecretKey) -> Result<Key, SignError> {
     public.to_base64().parse().map_err(SignError::minisign)
 }
 
-/// Write a claim into the store, with its signature beside it.
+/// Write a claim into the store at `stem`, with its signature beside it.
+///
+/// The stem is [`crate::naming`]'s answer and never this function's: a caller
+/// that has read the claims already held is the only one that can tell which
+/// collision tier applies, and a writer that guessed would be a writer that
+/// later renames — which decision 0003 leaves to `arrange` alone.
 pub fn write<F: Filesystem + ?Sized>(
     files: &F,
     root: &Path,
     claim: &Claim,
+    stem: &str,
     secret: &SecretKey,
 ) -> Result<Signed, SignError> {
     if claim.key != public_key(secret)? {
@@ -95,15 +103,17 @@ pub fn write<F: Filesystem + ?Sized>(
 
     let bytes = claim.render().into_bytes();
     let digest = historica::format::digest(&bytes);
-    let claim_path = claim_file(root, &digest);
-    let signature_path = signature_file(root, &digest);
+    let claim_path = claim_file(root, stem);
+    let signature_path = signature_file(root, stem);
     let name = claim_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default()
         .to_owned();
 
-    let directory = claims(root);
+    // The month directory decision 0041 files a revision in, which the stem
+    // carries and this is the first thing to need on disk.
+    let directory = claim_path.parent().unwrap_or(root).to_path_buf();
     files
         .create_directory(&directory)
         .map_err(|error| SignError::io(&directory, error))?;
@@ -140,8 +150,9 @@ pub fn write<F: Filesystem + ?Sized>(
 ///
 /// `name` goes in the trusted comment because minisign's own default puts the
 /// signed file's name there. It is covered by the global signature, so it is
-/// not a lie waiting to happen — but nothing in this crate reads it either: the
-/// claim's name is its digest, and the digest is computed from the bytes.
+/// not a lie waiting to happen — but nothing in this crate reads it either: a
+/// claim is identified by the digest of its bytes, and decision 0003 is the
+/// rule that no name anywhere is allowed to be the authority on that.
 pub fn signature(secret: &SecretKey, bytes: &[u8], name: &str) -> Result<String, SignError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)

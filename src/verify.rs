@@ -18,6 +18,21 @@
 //! cover every head and you have covered everything. Naming each uncovered
 //! revision instead would print a thousand notes that all say the one thing.
 //!
+//! # What a name can say, and what it cannot
+//!
+//! Decision 0003: a claim is identified by parsing it, never by reading its
+//! filename, so a claim under any name at all is read and counted. What the
+//! name buys is a folder worth opening, and the check that buys it back is
+//! [`Finding::Misfiled`] — a note, because the store is intact and the claim
+//! counts in full. A readable name can mislead a reader in a way a digest could
+//! not, and a design that makes a directory worth reading owes the reader a
+//! check that what they read is true.
+//!
+//! [`Finding::NameIsFalse`] survives for the one name that still asserts
+//! something checkable: sixty-four hex characters, which is either a store
+//! written before 0003 or the last-resort tier, and either way a false one is
+//! still false.
+//!
 //! # What a claim cannot say, and this cannot check
 //!
 //! A signature never stops being valid, so a store can present a subset of a
@@ -38,7 +53,10 @@ use historica::store::{Store, platform_name};
 use minisign_verify::Signature;
 
 use crate::claim::{Claim, ClaimError, Key};
-use crate::layout::{claims as claims_dir, digest_of_name, signed_name};
+use crate::layout::{
+    CLAIM_SUFFIX, claims as claims_dir, digest_of_name, is_claim_name, signed_name,
+};
+use crate::naming;
 use crate::trust::Trust;
 
 /// Whether a finding means the store is wrong, or only that something is worth
@@ -62,7 +80,7 @@ pub enum Finding {
         /// What is wrong with it.
         because: ClaimError,
     },
-    /// A claim whose filename does not state the digest of its own bytes.
+    /// A claim whose filename is a digest, and not the digest of its own bytes.
     NameIsFalse {
         /// The file.
         path: PathBuf,
@@ -70,6 +88,20 @@ pub enum Finding {
         claimed: RevisionId,
         /// What its bytes hash to.
         actual: RevisionId,
+    },
+    /// A claim that is not filed under the name this scheme would choose.
+    Misfiled {
+        /// Where it is.
+        path: PathBuf,
+        /// Where it belongs, relative to `claims/`.
+        should_be: String,
+    },
+    /// A second file holding a claim another file already holds.
+    Duplicate {
+        /// The copy not being counted.
+        path: PathBuf,
+        /// The copy that is.
+        of: PathBuf,
     },
     /// A claim with no signature beside it.
     Unsigned {
@@ -142,6 +174,8 @@ impl Finding {
             Self::Untrusted { .. }
             | Self::Absent { .. }
             | Self::Unvouched { .. }
+            | Self::Misfiled { .. }
+            | Self::Duplicate { .. }
             | Self::Foreign { .. } => Severity::Note,
         }
     }
@@ -162,6 +196,19 @@ impl fmt::Display for Finding {
                 "{} claims {claimed} and hashes to {actual}; the name is a \
                  claim and it is false",
                 path.display()
+            ),
+            Self::Misfiled { path, should_be } => write!(
+                f,
+                "{} belongs at {should_be}; the claim counts either way, and \
+                 `historica-sign arrange` moves it",
+                path.display()
+            ),
+            Self::Duplicate { path, of } => write!(
+                f,
+                "{} holds the same claim as {}, and is counted once; \
+                 `historica-sign arrange` reduces them to one",
+                path.display(),
+                of.display()
             ),
             Self::Unsigned { path } => write!(
                 f,
@@ -319,22 +366,29 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
         });
     }
 
-    let (claims, signatures, foreign) = look(files, &claims_dir(root))?;
+    let (found, signatures, foreign) = look(files, &claims_dir(root))?;
     report
         .findings
         .extend(foreign.into_iter().map(|path| Finding::Foreign { path }));
+    let names: BTreeSet<String> = found.iter().map(|(name, _)| name.clone()).collect();
 
-    for (name, path) in &claims {
-        let bytes = files.read(path)?;
+    // Pass one: the bytes, and what they are. Decision 0003: a claim is
+    // identified by parsing it, so nothing here consults a filename except to
+    // check the one kind of name that still asserts something checkable.
+    let mut read: Vec<(String, PathBuf, Vec<u8>, RevisionId, Claim)> = Vec::new();
+    for (name, path) in found {
+        let bytes = files.read(&path)?;
         let actual = digest(&bytes);
-        // The name is checked first, and the parse only after: a file whose
-        // name lies is wrong whatever it says inside, and reporting the parse
-        // of bytes that are not the bytes the name promised would be answering
-        // a question nobody asked.
-        let claimed = digest_of_name(name).expect("`look` kept only names that state a digest");
-        if claimed != actual {
+
+        // Sixty-four hex characters is a specific assertion about the bytes
+        // under it, and a false one is wrong whatever the file says inside — so
+        // it is checked before the parse, and the parse is not reported. Every
+        // other name asserts nothing this can refute here.
+        if let Some(claimed) = last(&name).and_then(digest_of_name)
+            && claimed != actual
+        {
             report.findings.push(Finding::NameIsFalse {
-                path: path.clone(),
+                path,
                 claimed,
                 actual,
             });
@@ -345,7 +399,7 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
             Ok(text) => text,
             Err(_) => {
                 report.findings.push(Finding::Malformed {
-                    path: path.clone(),
+                    path,
                     because: ClaimError::Preamble {
                         found: "bytes that are not text".to_owned(),
                     },
@@ -353,16 +407,47 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
                 continue;
             }
         };
-        let claim = match Claim::parse(&text) {
-            Ok(claim) => claim,
-            Err(because) => {
-                report.findings.push(Finding::Malformed {
+        match Claim::parse(&text) {
+            Ok(claim) => read.push((name, path, bytes, actual, claim)),
+            Err(because) => report.findings.push(Finding::Malformed { path, because }),
+        }
+    }
+
+    // The names this scheme would have chosen, which needs every claim in hand
+    // and the revisions they name. A store whose documents will not parse is
+    // `historica check`'s to report rather than this tool's: here it costs the
+    // name check alone, and every claim is still read and still counted.
+    let parsed: Vec<(&RevisionId, &Claim)> = read
+        .iter()
+        .map(|(_, _, _, id, claim)| (id, claim))
+        .collect();
+    let stems = match store.documents() {
+        Ok(documents) => naming::stems(parsed, documents),
+        Err(_) => BTreeMap::new(),
+    };
+
+    // Pass two: what each claim amounts to. Deduplicated on the digest computed
+    // above and never on the name, so one claim under two names is one claim.
+    let mut seen: BTreeMap<RevisionId, PathBuf> = BTreeMap::new();
+    for (name, path, bytes, id, claim) in read {
+        if let Some(first) = seen.get(&id) {
+            report.findings.push(Finding::Duplicate {
+                path,
+                of: first.clone(),
+            });
+            continue;
+        }
+        seen.insert(id, path.clone());
+
+        if let Some(stem) = stems.get(&id) {
+            let should_be = format!("{stem}{CLAIM_SUFFIX}");
+            if name != should_be {
+                report.findings.push(Finding::Misfiled {
                     path: path.clone(),
-                    because,
+                    should_be,
                 });
-                continue;
             }
-        };
+        }
 
         let verified = match signatures.get(name.as_str()) {
             None => {
@@ -401,7 +486,7 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
         }
 
         let held = Held {
-            path: path.clone(),
+            path,
             claim,
             verified,
             who,
@@ -424,14 +509,8 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
         report.held.push(held);
     }
 
-    for path in signatures.into_values() {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(signed_name)
-            .unwrap_or_default()
-            .to_owned();
-        if !claims.iter().any(|(claim, _)| claim == &name) {
+    for (name, path) in signatures {
+        if !names.contains(&name) {
             report.findings.push(Finding::Orphaned { path });
         }
     }
@@ -465,6 +544,10 @@ pub fn current_heads<F: Filesystem>(store: &Store<F>) -> BTreeSet<RevisionId> {
 
 /// The claims, the signatures by the claim each names, and whatever else was in
 /// the directory.
+///
+/// A claim is keyed by its path relative to `claims/`, so a signature pairs
+/// with the claim beside it rather than with any file of the same basename
+/// filed under another month.
 type Looked = (
     Vec<(String, PathBuf)>,
     BTreeMap<String, PathBuf>,
@@ -472,24 +555,34 @@ type Looked = (
 );
 
 fn look<F: Filesystem + ?Sized>(files: &F, directory: &Path) -> io::Result<Looked> {
-    let mut claims = Vec::new();
-    let mut signatures = BTreeMap::new();
-    let mut foreign = Vec::new();
+    let mut looked: Looked = Default::default();
+    walk(files, directory, "", &mut looked)?;
+    looked.0.sort();
+    Ok(looked)
+}
 
+/// One directory under `claims/`, and everything below it.
+///
+/// Recursive because decision 0041's month directory arrives inside the stem,
+/// and a reader that stopped at the top level would find nothing at all in a
+/// store written under decision 0003.
+fn walk<F: Filesystem + ?Sized>(
+    files: &F,
+    directory: &Path,
+    prefix: &str,
+    looked: &mut Looked,
+) -> io::Result<()> {
     let entries = match files.entries(directory) {
         Ok(entries) => entries,
         // No claims directory is a store nobody has vouched for, which is a
         // store this tool has nothing to say about rather than a fault.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
 
     for entry in entries {
-        if !matches!(files.look(&entry.path)?, Some(Kind::File)) {
-            continue;
-        }
         let Some(name) = entry.path.file_name().and_then(|name| name.to_str()) else {
-            foreign.push(entry.path);
+            looked.2.push(entry.path);
             continue;
         };
         // Historica's own list of names a store cannot own — the ones a file
@@ -499,17 +592,32 @@ fn look<F: Filesystem + ?Sized>(files: &F, directory: &Path) -> io::Result<Looke
         if platform_name(name) {
             continue;
         }
-        if let Some(signed) = signed_name(name) {
-            signatures.insert(signed.to_owned(), entry.path);
-        } else if digest_of_name(name).is_some() {
-            claims.push((name.to_owned(), entry.path));
+        let relative = if prefix.is_empty() {
+            name.to_owned()
         } else {
-            foreign.push(entry.path);
+            format!("{prefix}/{name}")
+        };
+
+        match files.look(&entry.path)? {
+            Some(Kind::Directory) => walk(files, &entry.path, &relative, looked)?,
+            Some(Kind::File) => {
+                if let Some(signed) = signed_name(&relative) {
+                    looked.1.insert(signed.to_owned(), entry.path);
+                } else if is_claim_name(&relative) {
+                    looked.0.push((relative, entry.path));
+                } else {
+                    looked.2.push(entry.path);
+                }
+            }
+            _ => {}
         }
     }
+    Ok(())
+}
 
-    claims.sort();
-    Ok((claims, signatures, foreign))
+/// The last component of a path relative to `claims/`.
+fn last(relative: &str) -> Option<&str> {
+    relative.rsplit('/').next()
 }
 
 /// Check one detached signature over some bytes, under the key that should
