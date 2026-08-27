@@ -7,7 +7,9 @@ Two halves, written two different ways.
 
 The bulleted groups below — **Added**, **Fixed**, **Changed**, and a
 **Behavioural changes** section under them — are **generated** from the commit
-log by `release changelog --write`, which reads `.config/cliff.toml`.
+log by `release changelog --write`, which reads the shared `cliff.toml` in
+diaryx-org/devtools — the same file, and the same style, in every repository
+here.
 Anything inside a `git-cliff:begin` / `git-cliff:end` pair is rewritten on every
 run, so an edit made there is an edit thrown away.
 
@@ -36,21 +38,25 @@ path.
 
 ### Breaking
 
-- **naming** — file a claim where it can be read ([`3bec795`](https://github.com/diaryx-org/historica-sign/commit/3bec79524fc8ef0fc13d92b967602e459aee9888))
+- **naming** — file a claim where it can be read ([`3bec795`](https://github.com/diaryx-org/historica-minisign/commit/3bec79524fc8ef0fc13d92b967602e459aee9888))
 
 ### Added
 
-- the repository, its CI, and the claim a signature covers ([`4ba95fb`](https://github.com/diaryx-org/historica-sign/commit/4ba95fb65e50746916debe46796d82573da2135f))
-- **trust** — one key to a file, and never from another store ([`3dfb980`](https://github.com/diaryx-org/historica-sign/commit/3dfb980fba9950b990bfc93701028076b6202d32))
-- **verify** — what a store's claims amount to ([`67bb241`](https://github.com/diaryx-org/historica-sign/commit/67bb241416fc35e9d58f71cbf3e4a7565e5d2711))
-- **sign** — a claim, written and signed ([`d0fc97c`](https://github.com/diaryx-org/historica-sign/commit/d0fc97cc32ca3d24913f1661ef273a410152bde4))
-- **cli** — sign, verify, trust, and key ([`82ab514`](https://github.com/diaryx-org/historica-sign/commit/82ab514373c3db17d1093b5b7dad8d8cce358fc0))
-- **trust** — a trust entry is named for whose key it is ([`b6e519e`](https://github.com/diaryx-org/historica-sign/commit/b6e519e1938bd0872d9f89ceaa9ee98ab479373c))
+- the repository, its CI, and the claim a signature covers ([`4ba95fb`](https://github.com/diaryx-org/historica-minisign/commit/4ba95fb65e50746916debe46796d82573da2135f))
+- **trust** — one key to a file, and never from another store ([`3dfb980`](https://github.com/diaryx-org/historica-minisign/commit/3dfb980fba9950b990bfc93701028076b6202d32))
+- **verify** — what a store's claims amount to ([`67bb241`](https://github.com/diaryx-org/historica-minisign/commit/67bb241416fc35e9d58f71cbf3e4a7565e5d2711))
+- **sign** — a claim, written and signed ([`d0fc97c`](https://github.com/diaryx-org/historica-minisign/commit/d0fc97cc32ca3d24913f1661ef273a410152bde4))
+- **cli** — sign, verify, trust, and key ([`82ab514`](https://github.com/diaryx-org/historica-minisign/commit/82ab514373c3db17d1093b5b7dad8d8cce358fc0))
+- **trust** — a trust entry is named for whose key it is ([`b6e519e`](https://github.com/diaryx-org/historica-minisign/commit/b6e519e1938bd0872d9f89ceaa9ee98ab479373c))
 
 ### Fixed
 
-- **verify** — ask the store whether it holds a digest, not for the document ([`da7b972`](https://github.com/diaryx-org/historica-sign/commit/da7b9728c5621b616986ea20d4f43a9e268573bf))
-- **naming** — a key prefix is a digest, not the key's own text ([`e282a2f`](https://github.com/diaryx-org/historica-sign/commit/e282a2f1a41ac2551de7bbba03694fd3c19ab796))
+- **verify** — ask the store whether it holds a digest, not for the document ([`da7b972`](https://github.com/diaryx-org/historica-minisign/commit/da7b9728c5621b616986ea20d4f43a9e268573bf))
+- **naming** — a key prefix is a digest, not the key's own text ([`e282a2f`](https://github.com/diaryx-org/historica-minisign/commit/e282a2f1a41ac2551de7bbba03694fd3c19ab796))
+
+### Changed
+
+- **xtask** — cut releases with the shared tooling, not a sixth copy ([`01f6991`](https://github.com/diaryx-org/historica-minisign/commit/01f69912a0b69a16a0f149e4e2f7a1e1896535ca))
 
 ### Behavioural changes
 
@@ -75,5 +81,10 @@ path.
  under a suffixed name rather than failing as taken, unless the label was
  given with `--label`. `trust::default_label` takes the `who` it is naming as
  a second argument.
+
+- `cargo xtask version`, `bump`, `changelog`, `release`, and
+  `release-notes` no longer exist. Each now exits non-zero naming its
+  replacement — `release <command>`, from diaryx-org/devtools, which must be on
+  PATH. `cargo xtask ci` and the individual CI jobs are unchanged.
 
 <!-- git-cliff:end -->
