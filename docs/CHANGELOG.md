@@ -39,6 +39,7 @@ path.
 ### Breaking
 
 - **naming** — file a claim where it can be read ([`3bec795`](https://github.com/diaryx-org/historica-minisign/commit/3bec79524fc8ef0fc13d92b967602e459aee9888))
+- historica-sign is historica-minisign, everywhere ([`0d88453`](https://github.com/diaryx-org/historica-minisign/commit/0d8845336b5de78e8deb0c8602ac19cb7933be43))
 
 ### Added
 
@@ -91,5 +92,10 @@ path.
 - releasing this repository needs diaryx-org/devtools on PATH
   for its git-cliff config as well as for `release` itself. Nothing in the tree
   configures git-cliff any more.
+
+- the crate is `historica-minisign` and the command is
+  `historica-minisign`. The library path is `historica_minisign`, so
+  `use historica_sign::…` no longer resolves. Nothing was ever published under
+  the old name.
 
 <!-- git-cliff:end -->
