@@ -57,6 +57,7 @@ path.
 ### Changed
 
 - **xtask** — cut releases with the shared tooling, not a sixth copy ([`01f6991`](https://github.com/diaryx-org/historica-minisign/commit/01f69912a0b69a16a0f149e4e2f7a1e1896535ca))
+- **release** — read the shared cliff config, not a local copy ([`398802d`](https://github.com/diaryx-org/historica-minisign/commit/398802db717bd3ddf8b4d8bb9fb453992c40c892))
 
 ### Behavioural changes
 
@@ -86,5 +87,9 @@ path.
   `release-notes` no longer exist. Each now exits non-zero naming its
   replacement — `release <command>`, from diaryx-org/devtools, which must be on
   PATH. `cargo xtask ci` and the individual CI jobs are unchanged.
+
+- releasing this repository needs diaryx-org/devtools on PATH
+  for its git-cliff config as well as for `release` itself. Nothing in the tree
+  configures git-cliff any more.
 
 <!-- git-cliff:end -->
