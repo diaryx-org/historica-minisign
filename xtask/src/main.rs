@@ -1,4 +1,4 @@
-//! historica-sign's CI, as one program.
+//! historica-minisign's CI, as one program.
 //!
 //! Every job the CI workflow runs is one entry in [`JOBS`] and one
 //! `cargo xtask <id>` invocation. The workflow itself holds no build knowledge:
@@ -130,8 +130,8 @@ fn verify_only(sh: &Sh) -> Result<()> {
 }
 
 /// Build on the crate's declared minimum supported Rust version. A build, not a
-/// test run: MSRV is a promise about who can *compile* historica-sign, and the
-/// dev-dependencies and test tooling need not hold to it.
+/// test run: MSRV is a promise about who can *compile* historica-minisign, and
+/// the dev-dependencies and test tooling need not hold to it.
 ///
 /// The version is read from `workspace.package.rust-version`, so the pin can
 /// never drift from the declared floor — bump it in Cargo.toml and this follows.
@@ -239,8 +239,8 @@ fn ci_matrix() -> String {
 
 fn usage() -> String {
     let mut out = String::from(
-        "historica-sign's CI, and its releases. Each job below is exactly what \
-         the CI workflow runs.\n\n\
+        "historica-minisign's CI, and its releases. Each job below is exactly \
+         what the CI workflow runs.\n\n\
          usage: cargo xtask <command>\n\njobs:\n\n",
     );
     for job in JOBS {

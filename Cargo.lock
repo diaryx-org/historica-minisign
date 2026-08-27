@@ -207,7 +207,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "historica-sign"
+name = "historica-minisign"
 version = "0.1.0"
 dependencies = [
  "historica",

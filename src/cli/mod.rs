@@ -17,14 +17,16 @@ use historica::store::{Store, StoreError};
 
 use historica::core::RevisionId;
 
-use historica_sign::claim::{Claim, Key, Role};
-use historica_sign::layout::{CLAIM_SUFFIX, SIGNATURE_SUFFIX, claim_file, claims, signature_file};
-use historica_sign::verify::{Finding, Severity};
-use historica_sign::{key, naming, sign, trust, verify};
+use historica_minisign::claim::{Claim, Key, Role};
+use historica_minisign::layout::{
+    CLAIM_SUFFIX, SIGNATURE_SUFFIX, claim_file, claims, signature_file,
+};
+use historica_minisign::verify::{Finding, Severity};
+use historica_minisign::{key, naming, sign, trust, verify};
 
-/// What `historica-sign` with no arguments prints.
+/// What `historica-minisign` with no arguments prints.
 pub const USAGE: &str = "\
-usage: historica-sign [-C <dir>] <command> [<arguments>]
+usage: historica-minisign [-C <dir>] <command> [<arguments>]
 
   sign [<target>] [--role <role>] [--key <path>] [--password-file <path>]
                            vouch for a revision: write a claim into
@@ -149,7 +151,7 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<u8, Failure> {
             "-h" | "--help" | "help" => return printing(|out| out.write_all(USAGE.as_bytes())),
             "-V" | "--version" => {
                 return printing(|out| {
-                    writeln!(out, "historica-sign {}", env!("CARGO_PKG_VERSION"))
+                    writeln!(out, "historica-minisign {}", env!("CARGO_PKG_VERSION"))
                 });
             }
             other if other.starts_with('-') => {
@@ -284,8 +286,8 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
             None => writeln!(
                 out,
                 "\nnothing in trust/ speaks for that key, so `verify` here will \
-                 note the claim rather than count it:\n  historica-sign trust \
-                 add {} \"Your Name <you@example.com>\"",
+                 note the claim rather than count it:\n  historica-minisign \
+                 trust add {} \"Your Name <you@example.com>\"",
                 claim.key
             ),
         }
@@ -590,7 +592,7 @@ fn trust_list(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
         if policy.is_empty() {
             writeln!(
                 out,
-                "this copy believes nobody yet; `historica-sign trust add \
+                "this copy believes nobody yet; `historica-minisign trust add \
                  <key> <who>` is how it starts"
             )?;
         }
@@ -743,7 +745,7 @@ fn key_new(arguments: &[String]) -> Result<u8, Failure> {
             out,
             "\nthe secret key is the only thing here that cannot be replaced: \
              back it up, and nothing else needs to be. Tell a store to believe \
-             it with\n  historica-sign trust add {} \"Your Name \
+             it with\n  historica-minisign trust add {} \"Your Name \
              <you@example.com>\"",
             generated.key
         )
@@ -817,8 +819,8 @@ fn value<'a>(
 }
 
 /// Write to stdout, treating a closed pipe as the ordinary end of a command
-/// rather than as a fault: `historica-sign verify | head` should not report an
-/// error about the reader that stopped reading.
+/// rather than as a fault: `historica-minisign verify | head` should not report
+/// an error about the reader that stopped reading.
 fn printing(write: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Result<u8, Failure> {
     let stdout = io::stdout();
     let mut out = stdout.lock();

@@ -1,4 +1,4 @@
-# historica-sign
+# historica-minisign
 
 Who vouches for a revision in a [Historica](https://github.com/diaryx-org/historica)
 store.
@@ -24,18 +24,18 @@ fills in the grammar, and nothing more.
 Claims, trust, and verification work end to end.
 
 ```console
-$ historica-sign key new
+$ historica-minisign key new
 RWQq6vJVR0z0KLGfXKp1a2mYlUB0kUZC8oXbEPu29z1DnKUB0FdrRhJs
   secret  /Users/adam/.minisign/minisign.key
   public  /Users/adam/.minisign/minisign.pub
 
-$ historica-sign sign --role reviewer
+$ historica-minisign sign --role reviewer
 RWQq6vJVR0z0KLGfXKp1a2mYlUB0kUZC8oXbEPu29z1DnKUB0FdrRhJs vouches for 3d0f1b2c9a44 as reviewer
   history/claims/8c1e….claim.txt
   history/claims/8c1e….claim.txt.minisig
 
-$ historica-sign trust add RWQq6vJ… "Adam Harris <adam@example.com>"
-$ historica-sign verify --complete
+$ historica-minisign trust add RWQq6vJ… "Adam Harris <adam@example.com>"
+$ historica-minisign verify --complete
 1 claim, 1 by a key this copy believes
   3d0f1b2c9a44 as reviewer by Adam Harris <adam@example.com>
 
@@ -127,7 +127,7 @@ push, so the promise cannot rot.
 
 ## Building it
 
-`historica-sign` depends on historica with both a version and a path, so it
+`historica-minisign` depends on historica with both a version and a path, so it
 builds only with historica checked out beside it, and cannot be published until
 historica is.
 

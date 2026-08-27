@@ -8,7 +8,7 @@ that the pair of them does not read as an inconsistency.
 
 ## The decision
 
-**`historica-sign` links `minisign` for signing and `minisign-verify` for
+**`historica-minisign` links `minisign` for signing and `minisign-verify` for
 verifying. Neither the `minisign` command nor any other program is required for
 any operation.**
 

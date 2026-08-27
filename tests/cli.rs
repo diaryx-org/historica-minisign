@@ -49,7 +49,7 @@ fn work(directory: &Path) -> PathBuf {
 }
 
 fn run(folder: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_historica-sign"))
+    Command::new(env!("CARGO_BIN_EXE_historica-minisign"))
         .arg("-C")
         .arg(folder)
         .args(arguments)

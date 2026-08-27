@@ -1,6 +1,6 @@
 # Changelog
 
-What has changed in historica-sign, release by release, for someone deciding
+What has changed in historica-minisign, release by release, for someone deciding
 whether to move to a newer one.
 
 Two halves, written two different ways.
@@ -28,7 +28,7 @@ elsewhere: **anything that changes what `verify` accepts or refuses**. A claim
 that used to be a note and is now an error, or the reverse, changes what
 somebody's CI does without a line of their code moving.
 
-historica-sign has not been released, and cannot be until historica is:
+historica-minisign has not been released, and cannot be until historica is:
 decision 0002 explains why the dependency is spelled with both a version and a
 path.
 

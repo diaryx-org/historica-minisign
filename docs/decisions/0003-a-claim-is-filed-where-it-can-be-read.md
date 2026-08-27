@@ -172,7 +172,7 @@ reading owes the reader a check that what they read is true.
 
 ### `arrange`
 
-`historica-sign arrange` re-files every claim under the name this scheme
+`historica-minisign arrange` re-files every claim under the name this scheme
 chooses, renaming and never rewriting, exactly as `historica arrange` does for
 revisions and for the same stated reason: only `arrange` renames, because a
 writer names the file it is creating rather than renaming it afterwards. It is

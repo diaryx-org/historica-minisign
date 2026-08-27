@@ -55,7 +55,7 @@ pub const EXPLANATION: &str = "\
 #
 # Nothing ever writes this directory from another store: receiving a store
 # receives its history and its claims, never its opinion of who to believe.
-# Adding a key is `historica-sign trust add`, or writing a file like the
+# Adding a key is `historica-minisign trust add`, or writing a file like the
 # above. Removing one is deleting its file.
 ";
 

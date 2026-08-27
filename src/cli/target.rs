@@ -8,7 +8,7 @@
 //! it here is asking Historica to publish it. That is a change to Historica
 //! with a version number on it, and this tool is not the reason to make it —
 //! but the vocabulary is copied exactly, because a person who learns
-//! `historica log 3a` should be able to type `historica-sign sign 3a`.
+//! `historica log 3a` should be able to type `historica-minisign sign 3a`.
 
 use historica::core::{ChangeId, ChangeState, RevisionId};
 use historica::store::{Name, Store};
@@ -63,7 +63,7 @@ pub fn resolve(store: &Store, spelling: &str) -> Result<RevisionId, Failure> {
 /// Historica's decision 0023: an amended revision is still a head by parent
 /// edges, so the superseded ones come out first.
 pub fn the_head(store: &Store) -> Result<Option<RevisionId>, Failure> {
-    let heads = historica_sign::verify::current_heads(store);
+    let heads = historica_minisign::verify::current_heads(store);
     match heads.len() {
         0 => Ok(None),
         1 => Ok(heads.into_iter().next()),

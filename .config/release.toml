@@ -1,8 +1,8 @@
-# What the shared release tooling needs to know about historica-sign. Everything not
-# stated here is a default in lib/repo.nu — the manifest, the changelog path,
-# the cliff config, and that this is a Cargo workspace.
-name = "historica-sign"
-url = "https://github.com/diaryx-org/historica-sign"
+# What the shared release tooling needs to know about historica-minisign.
+# Everything not stated here is a default in lib/repo.nu — the manifest, the
+# changelog path, the cliff config, and that this is a Cargo workspace.
+name = "historica-minisign"
+url = "https://github.com/diaryx-org/historica-minisign"
 release_branch = "main"
 
 # What to run before cutting. Each repo owns its own CI; this names it.

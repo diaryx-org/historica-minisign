@@ -1,5 +1,5 @@
 [package]
-name = "historica-sign"
+name = "historica-minisign"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ description = "Signed claims that vouch for Historica revisions"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-documentation = "https://docs.rs/historica-sign"
+documentation = "https://docs.rs/historica-minisign"
 # What a person searching crates.io would type. They arrive holding a store
 # whose `author` lines nothing checks, so `historica` and `version-control` are
 # the shelf; `minisign` and `signing` are the errand; `trust` is the question
@@ -15,7 +15,7 @@ documentation = "https://docs.rs/historica-sign"
 keywords = ["historica", "minisign", "signing", "version-control", "trust"]
 categories = ["development-tools", "command-line-utilities", "cryptography"]
 
-# `xtask` is historica-sign's CI, as a program, exactly as it is in historica
+# `xtask` is historica-minisign's CI, as a program, exactly as it is in historica
 # and historica-git: `cargo xtask <job>` runs one CI job and the workflow runs
 # nothing else.
 [workspace]
@@ -30,7 +30,7 @@ edition = "2024"
 # this value. It cannot go below historica's own floor.
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/diaryx-org/historica-sign"
+repository = "https://github.com/diaryx-org/historica-minisign"
 
 # `verify` is the half that has to be cheap to depend on. Historica's decision
 # 0046 defers enforcement at `receive` — a store refusing history no trusted key
@@ -55,7 +55,7 @@ disk = ["historica/disk"]
 # would be a strange thing to install; `disk` because a CLI is the one caller
 # that always knows it is talking to a real filesystem.
 [[bin]]
-name = "historica-sign"
+name = "historica-minisign"
 path = "src/main.rs"
 required-features = ["sign", "disk"]
 

@@ -19,8 +19,8 @@ use std::process::Command;
 use historica::format::digest;
 use historica::fs::Disk;
 use historica::record::{Clock, Platform};
-use historica_sign::claim::Claim;
-use historica_sign::{key, layout, sign, verify};
+use historica_minisign::claim::Claim;
+use historica_minisign::{key, layout, sign, verify};
 
 const PASSWORD: &str = "not a secret";
 
@@ -124,7 +124,7 @@ fn a_claim_the_minisign_command_signed_verifies_here() {
 
     // The public key as the command spells it, which is what a claim spells.
     let text = fs::read_to_string(&public).expect("the public key");
-    let key: historica_sign::Key = text
+    let key: historica_minisign::Key = text
         .lines()
         .find_map(|line| line.trim().parse().ok())
         .expect("a key on one of its two lines");

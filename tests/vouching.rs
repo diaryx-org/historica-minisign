@@ -15,10 +15,10 @@ use historica::core::RevisionId;
 use historica::record::{Clock, Kinds, Platform, Recording, Restriction, record};
 use historica::store::Store;
 use historica::working::Working;
-use historica_sign::claim::{Claim, Role};
-use historica_sign::sign::SecretKey;
-use historica_sign::verify::Finding;
-use historica_sign::{key, layout, naming, sign, trust, verify};
+use historica_minisign::claim::{Claim, Role};
+use historica_minisign::sign::SecretKey;
+use historica_minisign::verify::Finding;
+use historica_minisign::{key, layout, naming, sign, trust, verify};
 
 /// A password no test keeps a secret, in a file, which is the only way to sign
 /// without a terminal.
@@ -59,7 +59,7 @@ fn store_of(directory: &Path, revisions: usize) -> Store {
 }
 
 /// A key pair in its own directory, unlocked.
-fn keys(directory: &Path) -> (SecretKey, historica_sign::Key) {
+fn keys(directory: &Path) -> (SecretKey, historica_minisign::Key) {
     let home = directory.join("keys");
     let generated = key::generate(&home, Some(PASSWORD.to_owned())).expect("a key pair");
     let secret = key::load(&generated.secret, Some(PASSWORD.to_owned())).expect("the key back");
@@ -124,7 +124,7 @@ fn under(directory: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn believe(store: &Store, key: &historica_sign::Key) {
+fn believe(store: &Store, key: &historica_minisign::Key) {
     trust::add(
         store.filesystem(),
         store.root(),

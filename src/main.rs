@@ -1,4 +1,4 @@
-//! `historica-sign`, the trust layer Historica's decision 0046 declined to
+//! `historica-minisign`, the trust layer Historica's decision 0046 declined to
 //! build inside Historica.
 //!
 //! The whole program is four commands over files a person could write by hand:
@@ -16,7 +16,7 @@ fn main() -> ExitCode {
         Ok(code) => ExitCode::from(code),
         Err(failure) => {
             if let Some(message) = failure.message() {
-                eprintln!("historica-sign: {message}");
+                eprintln!("historica-minisign: {message}");
             }
             if failure.wants_usage() {
                 eprintln!();

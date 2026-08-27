@@ -200,13 +200,13 @@ impl fmt::Display for Finding {
             Self::Misfiled { path, should_be } => write!(
                 f,
                 "{} belongs at {should_be}; the claim counts either way, and \
-                 `historica-sign arrange` moves it",
+                 `historica-minisign arrange` moves it",
                 path.display()
             ),
             Self::Duplicate { path, of } => write!(
                 f,
                 "{} holds the same claim as {}, and is counted once; \
-                 `historica-sign arrange` reduces them to one",
+                 `historica-minisign arrange` reduces them to one",
                 path.display(),
                 of.display()
             ),

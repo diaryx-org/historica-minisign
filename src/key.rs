@@ -221,7 +221,7 @@ impl fmt::Display for KeyError {
         match self {
             Self::NoKey { path } => write!(
                 f,
-                "there is no key at {}; `historica-sign key new` writes one, \
+                "there is no key at {}; `historica-minisign key new` writes one, \
                  and `--key` names one somewhere else",
                 path.display()
             ),
