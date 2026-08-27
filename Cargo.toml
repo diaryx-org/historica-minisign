@@ -69,7 +69,7 @@ required-features = ["sign", "disk"]
 # filesystem seam, and the one spelling of a moment. Nothing here writes a
 # historica document, and historica's decision 0046 is why: the trust layer
 # needs nothing from the inside.
-historica = { version = "1.0", path = "../historica", default-features = false }
+historica = {version = "1.0.0-rc.1"}
 # Verification, which is the operation that must work everywhere. Zero
 # dependencies of its own, which is the whole reason 0046 names it.
 minisign-verify = "0.2.5"
