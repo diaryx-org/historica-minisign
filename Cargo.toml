@@ -21,8 +21,8 @@ categories = ["development-tools", "command-line-utilities", "cryptography"]
 [workspace]
 members = ["xtask"]
 
-# One `version = "…"` line for the whole repository, which is what `cargo xtask
-# bump` rewrites and what the package inherits.
+# One `version = "…"` line for the whole repository, which is what `dx bump`
+# rewrites and what the package inherits.
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
@@ -60,10 +60,10 @@ path = "src/main.rs"
 required-features = ["sign", "disk"]
 
 [dependencies]
-# Both spellings on purpose, as in historica-git. The path is what builds:
-# historica is not on crates.io yet, so nothing else would resolve. The version
-# is what publishing needs, and states the promise this crate is written
-# against.
+# A version and no path, as in historica-git: what this crate can reach is what
+# historica published, because a registry dependency is the only thing it has.
+# The version states the promise this crate is written against, and historica's
+# decision 0053 promises the other end of it.
 #
 # What is taken from it is deliberately small — the store's revision set, the
 # filesystem seam, and the one spelling of a moment. Nothing here writes a

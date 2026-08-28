@@ -127,9 +127,11 @@ push, so the promise cannot rot.
 
 ## Building it
 
-`historica-minisign` depends on historica with both a version and a path, so it
-builds only with historica checked out beside it, and cannot be published until
-historica is.
+`historica-minisign` depends on historica by version and not by path, so a
+clone builds on its own — and so what this crate can reach is the published API
+and nothing else, which is the boundary historica's decision 0053 promises from
+the other side. Publishing it needs the historica version it names to be on
+crates.io, for the same reason.
 
 ```console
 $ cargo xtask ci
