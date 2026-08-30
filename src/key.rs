@@ -14,6 +14,11 @@
 //! This module reaches `std::fs` directly rather than through Historica's
 //! filesystem seam. The seam is about the store, and a secret key is the one
 //! file in this design that must never be in one.
+//!
+//! [`mint`] is the same errand for a caller whose secret store is not a file
+//! at all. Everything else here is a path and a password prompt, which is what
+//! a terminal has; a caller holding its key in a keychain has neither, and the
+//! only thing it needs from this crate is a key that exists.
 
 use std::fmt;
 use std::fs::{self, File};
@@ -154,6 +159,34 @@ pub fn generate(directory: &Path, password: Option<String>) -> Result<Generated,
         public,
         key,
     })
+}
+
+/// Mint a secret key in memory. Nothing is written and nothing is prompted for.
+///
+/// [`generate`] answers *where a first key comes from* for a caller whose
+/// secret store is a directory: two files, the secret one encrypted under a
+/// password somebody types. This answers the same question for a caller whose
+/// secret store is not a file — a keychain, a secure enclave, whatever an HSM
+/// is fronting — which has no path to write to and no terminal to prompt at.
+///
+/// **The key that comes back is unprotected.** No password covers it and no
+/// key derivation has been run over it, so anything that can read the bytes can
+/// sign as this key for as long as it exists, and there is no revoking a
+/// signature already made. Keeping that from happening is entirely the caller's
+/// store, which is the whole of the trade: minisign's password is the right
+/// answer for a file on a laptop and no answer at all where nobody is present
+/// to type one.
+///
+/// [`SecretKey::to_bytes`] and [`SecretKey::from_bytes`] are the round trip —
+/// what goes into that store, and what a key is rebuilt from on each use. What
+/// the rebuilt key signs is what the `minisign` command accepts, because
+/// decision 0002 is about the artifacts and not about where a key was kept.
+pub fn mint() -> Result<SecretKey, KeyError> {
+    KeyPair::generate_unencrypted_keypair()
+        .map(|pair| pair.sk)
+        .map_err(|error| KeyError::Minisign {
+            because: error.to_string(),
+        })
 }
 
 fn create_new(path: &Path, bytes: &[u8]) -> Result<(), KeyError> {
