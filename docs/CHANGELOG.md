@@ -48,6 +48,7 @@ path.
 - **sign** — a claim, written and signed ([`d0fc97c`](https://github.com/diaryx-org/historica-minisign/commit/d0fc97cc32ca3d24913f1661ef273a410152bde4))
 - **cli** — sign, verify, trust, and key ([`82ab514`](https://github.com/diaryx-org/historica-minisign/commit/82ab514373c3db17d1093b5b7dad8d8cce358fc0))
 - **trust** — a trust entry is named for whose key it is ([`b6e519e`](https://github.com/diaryx-org/historica-minisign/commit/b6e519e1938bd0872d9f89ceaa9ee98ab479373c))
+- **key** — mint an unencrypted key in memory ([`fedb28f`](https://github.com/diaryx-org/historica-minisign/commit/fedb28f19aa37b3ecf23cc36a7dd8de2fb3a73d2))
 
 ### Fixed
 
