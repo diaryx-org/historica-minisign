@@ -24,7 +24,7 @@ members = ["xtask"]
 # One `version = "…"` line for the whole repository, which is what `dx bump`
 # rewrites and what the package inherits.
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # Minimum supported Rust version, enforced by the `msrv` CI job, which reads
 # this value. It cannot go below historica's own floor.

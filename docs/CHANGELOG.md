@@ -35,10 +35,17 @@ path.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.2.0 — 2026-10-03
+
 ### Breaking
 
 - **naming** — file a claim where it can be read ([`3bec795`](https://github.com/diaryx-org/historica-minisign/commit/3bec79524fc8ef0fc13d92b967602e459aee9888))
 - historica-sign is historica-minisign, everywhere ([`0d88453`](https://github.com/diaryx-org/historica-minisign/commit/0d8845336b5de78e8deb0c8602ac19cb7933be43))
+- **claim** — a claim can be over one file, naming its content digest ([`8bdff73`](https://github.com/diaryx-org/historica-minisign/commit/8bdff733243be1d7042e6cbf587f7f03242dfe8f))
 
 ### Added
 
@@ -98,4 +105,18 @@ path.
   `use historica_sign::…` no longer resolves. Nothing was ever published under
   the old name.
 
-<!-- git-cliff:end -->
+- `verify` reads a `claim-1` file in `claims/` and lists it.
+  Before this, it reported such a file as `Malformed`, an error. A one-file
+  claim over a file its revision does not hold is now the error `NoSuchFile`,
+  and it adds nothing to `vouched()` or `vouches_for()`. Stores holding only
+  `claim-0` verify exactly as before.
+
+- `Claim` has a new public field, `scope`, and `Held` has a
+  new public field, `file`, so code that builds either with a struct literal
+  must add it. `Held::counts()` for a one-file claim also requires the file to
+  be found in its revision's tree.
+
+- a claim with an unknown header inserted among its lines is
+  now refused as `Unknown` at that line, where it used to be refused as
+  `Trailing`. Both are refusals; only the diagnosis changed.
+
