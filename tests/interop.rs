@@ -131,6 +131,7 @@ fn a_claim_the_minisign_command_signed_verifies_here() {
 
     let claim = Claim {
         revision: some_revision(),
+        scope: historica_minisign::Scope::Revision,
         role: "release".parse().expect("a role"),
         key,
         when: Platform.now().expect("a clock"),

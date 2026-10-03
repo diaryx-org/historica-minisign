@@ -1,4 +1,5 @@
-//! The claim document: one key, one revision, one role, one moment.
+//! The claim document: one key, one revision, one role, one moment — and,
+//! since decision 0004, optionally one file.
 //!
 //! ```text
 //! claim-0
@@ -16,8 +17,26 @@
 //! believe this*, and a header a future grammar adds is far more likely to
 //! narrow a claim than to widen it — an `expires`, a `scope`, an `only-for`.
 //! A reader that skipped such a line would accept a claim its author had
-//! already limited. So every claim is exactly five lines, in this order, and
-//! anything else is malformed.
+//! already limited. So every claim is exactly the lines its preamble names, in
+//! that order, and anything else is malformed.
+//!
+//! Decision 0004 is the first time the grammar grew, and it grew exactly as
+//! 0001 said it would: a narrowing is a new preamble. `claim-1` vouches for one
+//! file as it stood at a revision, and names that file's content digest:
+//!
+//! ```text
+//! claim-1
+//! revision 33f863f19e9b19f47ae42e41b4c25f03acc3c14acca2da65ea6bb141016b487a
+//! file kmnpqrstvwxzkmnpqrstvwxz
+//! content sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+//! role reviewer
+//! key RWTd8LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
+//! when 2026-10-03T09:12:04-06:00
+//! ```
+//!
+//! A `claim-0` reader meets `file` where it expects `role` and refuses the
+//! document, which is the rule working: it cannot tell that the claim was
+//! narrowed, so it does not count it as covering anything.
 //!
 //! A claim carries no message. The signature covers the whole document, so
 //! prose would be safe, but a claim's worth is that it says exactly one thing;
@@ -26,21 +45,28 @@
 use std::fmt;
 use std::str::FromStr;
 
-use historica::core::RevisionId;
+use historica::core::{FileId, RevisionId};
 use historica::format::{Timestamp, digest};
 use minisign_verify::PublicKey;
 
-/// The preamble every claim begins with.
+/// The preamble a whole-revision claim begins with.
 ///
 /// Spelled with its number, unlike Historica's bare `historica`: a claim is not
 /// a Historica document and must never be mistaken for one, and this grammar
 /// grows by minting `claim-1` rather than by loosening what `claim-0` accepts.
 pub const PREAMBLE: &str = "claim-0";
 
-/// The headers, in the one order a claim may state them.
+/// The preamble a claim over one file begins with. Decision 0004.
+pub const FILE_PREAMBLE: &str = "claim-1";
+
+/// The headers of a `claim-0`, in the one order it may state them.
 const HEADERS: [&str; 4] = ["revision", "role", "key", "when"];
 
-/// One key vouching for one revision.
+/// The headers of a `claim-1`, in the one order it may state them: what is
+/// vouched for first, then in what capacity, by whom, and when.
+const FILE_HEADERS: [&str; 6] = ["revision", "file", "content", "role", "key", "when"];
+
+/// One key vouching for one revision, or for one file at it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
     /// The revision vouched for, by digest.
@@ -48,6 +74,9 @@ pub struct Claim {
     /// A digest and never a change ID: a claim over a change would follow
     /// amendment, which is exactly the property a signature must not have.
     pub revision: RevisionId,
+    /// Whether the claim covers the whole revision or one file at it, and
+    /// which preamble it is therefore written under.
+    pub scope: Scope,
     /// In what capacity.
     pub role: Role,
     /// Whose word this is.
@@ -56,16 +85,71 @@ pub struct Claim {
     pub when: Timestamp,
 }
 
+/// What a claim covers.
+///
+/// Not `#[non_exhaustive]`, deliberately: a third scope would be a narrowing a
+/// caller has never judged, and a `match` that stops compiling is that caller
+/// being told so — the same refusal decision 0001 asks of a reader.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Scope {
+    /// The whole revision, and by its digest everything it descends from.
+    /// Written as `claim-0`.
+    Revision,
+    /// One file as it stood at the revision. Written as `claim-1`.
+    ///
+    /// Covers no other file, and nothing the revision descends from.
+    File {
+        /// The file, by Historica's file ID, which a rename does not change.
+        file: FileId,
+        /// The file's content digest, as the claimant's tool computed it.
+        ///
+        /// Opaque here. This crate checks its spelling and never computes it,
+        /// because which bytes of a file are *content* is the claimant's
+        /// tool's knowledge: for pedantic it is prov's digest of a document
+        /// without its `confirmed:` list. What it is for is a reader's tool
+        /// comparing it with the file's content digest *now*.
+        content: ContentDigest,
+    },
+}
+
 impl Claim {
-    /// The document, as the bytes that get signed and hashed.
-    pub fn render(&self) -> String {
-        format!(
-            "{PREAMBLE}\nrevision {}\nrole {}\nkey {}\nwhen {}\n",
-            self.revision, self.role, self.key, self.when
-        )
+    /// The preamble this claim is written under, which its scope decides.
+    pub fn preamble(&self) -> &'static str {
+        match self.scope {
+            Scope::Revision => PREAMBLE,
+            Scope::File { .. } => FILE_PREAMBLE,
+        }
     }
 
-    /// Read a claim, refusing anything this grammar does not name.
+    /// The file and content digest a one-file claim names, or `None` for a
+    /// claim over a whole revision.
+    pub fn file(&self) -> Option<(&FileId, &ContentDigest)> {
+        match &self.scope {
+            Scope::Revision => None,
+            Scope::File { file, content } => Some((file, content)),
+        }
+    }
+
+    /// The document, as the bytes that get signed and hashed.
+    ///
+    /// A whole-revision claim is always `claim-0`, never a `claim-1` with the
+    /// file lines left out: one claim has one spelling, so one claim is one
+    /// file however many times and wherever it is written, and a reader built
+    /// before decision 0004 still reads every whole-revision claim.
+    pub fn render(&self) -> String {
+        match &self.scope {
+            Scope::Revision => format!(
+                "{PREAMBLE}\nrevision {}\nrole {}\nkey {}\nwhen {}\n",
+                self.revision, self.role, self.key, self.when
+            ),
+            Scope::File { file, content } => format!(
+                "{FILE_PREAMBLE}\nrevision {}\nfile {file}\ncontent {content}\nrole {}\nkey {}\nwhen {}\n",
+                self.revision, self.role, self.key, self.when
+            ),
+        }
+    }
+
+    /// Read a claim, refusing anything its grammar does not name.
     pub fn parse(text: &str) -> Result<Self, ClaimError> {
         // `split` rather than `lines`, so a missing final newline and a stray
         // blank line are both visible rather than silently tolerated: the bytes
@@ -76,19 +160,20 @@ impl Claim {
         };
         let lines: Vec<&str> = body.split('\n').collect();
 
-        if lines[0] != PREAMBLE {
-            return Err(ClaimError::Preamble {
-                found: lines[0].to_owned(),
-            });
-        }
-        if lines.len() > HEADERS.len() + 1 {
-            return Err(ClaimError::Trailing {
-                at: HEADERS.len() + 2,
-            });
-        }
-
-        let mut values = Vec::with_capacity(HEADERS.len());
-        for (index, expected) in HEADERS.iter().enumerate() {
+        // The preamble picks the grammar, and nothing else may: a reader that
+        // guessed the grammar from the headers would be a reader that read a
+        // `claim-1`'s file lines as optional.
+        let headers: &[&'static str] = match lines[0] {
+            PREAMBLE => &HEADERS,
+            FILE_PREAMBLE => &FILE_HEADERS,
+            found => {
+                return Err(ClaimError::Preamble {
+                    found: found.to_owned(),
+                });
+            }
+        };
+        let mut values = Vec::with_capacity(headers.len());
+        for (index, expected) in headers.iter().enumerate() {
             let at = index + 2;
             let Some(line) = lines.get(index + 1) else {
                 return Err(ClaimError::Missing { header: expected });
@@ -98,7 +183,7 @@ impl Claim {
                 None => (*line, ""),
             };
             if found != *expected {
-                return Err(if HEADERS.contains(&found) {
+                return Err(if headers.contains(&found) {
                     ClaimError::OutOfOrder {
                         at,
                         found: found.to_owned(),
@@ -111,37 +196,71 @@ impl Claim {
                     }
                 });
             }
-            values.push((at, value));
+            values.push((at, *expected, value));
+        }
+        // After the headers rather than before, so that a line a later grammar
+        // inserted is named as the header it is — the diagnosis decision 0001
+        // is about — rather than counted as one line too many.
+        if lines.len() > headers.len() + 1 {
+            return Err(ClaimError::Trailing {
+                at: headers.len() + 2,
+            });
         }
 
+        // Every header is in place, so each is found by name rather than by
+        // position, which is the one thing the two grammars disagree about.
+        // Only names the chosen grammar holds are asked for below.
+        let line = |header: &str| {
+            let (at, _, value) = values
+                .iter()
+                .find(|(_, name, _)| *name == header)
+                .copied()
+                .expect("a header the grammar names");
+            (at, value)
+        };
         let malformed = |at: usize, header: &'static str, because: String| ClaimError::Malformed {
             at,
             header,
             because,
         };
 
-        let revision = values[0].1.parse::<RevisionId>().map_err(|_| {
+        let (at, value) = line("revision");
+        let revision = value.parse::<RevisionId>().map_err(|_| {
             malformed(
-                values[0].0,
+                at,
                 "revision",
                 "a digest is 64 hexadecimal characters".to_owned(),
             )
         })?;
-        let role = values[1]
-            .1
+        let scope = if lines[0] == FILE_PREAMBLE {
+            let (at, value) = line("file");
+            let file = value
+                .parse::<FileId>()
+                .map_err(|error| malformed(at, "file", error.to_string()))?;
+            let (at, value) = line("content");
+            let content = value
+                .parse::<ContentDigest>()
+                .map_err(|error| malformed(at, "content", error.to_string()))?;
+            Scope::File { file, content }
+        } else {
+            Scope::Revision
+        };
+        let (at, value) = line("role");
+        let role = value
             .parse::<Role>()
-            .map_err(|error| malformed(values[1].0, "role", error.to_string()))?;
-        let key = values[2]
-            .1
+            .map_err(|error| malformed(at, "role", error.to_string()))?;
+        let (at, value) = line("key");
+        let key = value
             .parse::<Key>()
-            .map_err(|error| malformed(values[2].0, "key", error.to_string()))?;
-        let when = values[3]
-            .1
+            .map_err(|error| malformed(at, "key", error.to_string()))?;
+        let (at, value) = line("when");
+        let when = value
             .parse::<Timestamp>()
-            .map_err(|error| malformed(values[3].0, "when", error.to_string()))?;
+            .map_err(|error| malformed(at, "when", error.to_string()))?;
 
         Ok(Self {
             revision,
+            scope,
             role,
             key,
             when,
@@ -163,6 +282,103 @@ impl fmt::Display for Claim {
         f.write_str(&self.render())
     }
 }
+
+/// A file's content digest, as the tool that computed it spells it:
+/// `sha256:9f86d0…`.
+///
+/// Decision 0004: an algorithm, a colon, and a value. The algorithm is one to
+/// sixteen characters of `a`–`z`, `0`–`9` and `-`, beginning with a letter;
+/// the value is one to 128 characters of ASCII letters, digits, `-` and `_`,
+/// which holds hexadecimal and unpadded URL-safe base64 alike.
+///
+/// That is the whole of what this crate knows about it. It never computes one
+/// and never normalises one — two digests are the same when they are the same
+/// characters — because the comparison that gives a one-file claim its worth,
+/// this digest against the file's content digest now, is made by a tool that
+/// knows what the file's content is. The algorithm is required so that such a
+/// tool can tell a digest it cannot compare from one that differs.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ContentDigest(String);
+
+/// The longest an algorithm's name may be.
+const ALGORITHM_LIMIT: usize = 16;
+
+/// The longest a digest's value may be: SHA-512 in hexadecimal.
+const DIGEST_LIMIT: usize = 128;
+
+impl ContentDigest {
+    /// The digest, as written.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// What comes before the colon: `sha256`.
+    pub fn algorithm(&self) -> &str {
+        self.0
+            .split_once(':')
+            .map_or("", |(algorithm, _)| algorithm)
+    }
+
+    /// What comes after it.
+    pub fn value(&self) -> &str {
+        self.0.split_once(':').map_or("", |(_, value)| value)
+    }
+}
+
+impl FromStr for ContentDigest {
+    type Err = MalformedContentDigest;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let fail = |because| Err(MalformedContentDigest { because });
+        let Some((algorithm, value)) = text.split_once(':') else {
+            return fail("it has no `:` between an algorithm and a value");
+        };
+        if algorithm.is_empty() || algorithm.len() > ALGORITHM_LIMIT {
+            return fail("its algorithm is not one to sixteen characters");
+        }
+        if !algorithm.starts_with(|c: char| c.is_ascii_lowercase())
+            || !algorithm
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return fail("its algorithm is not `a`–`z`, `0`–`9` and `-`, beginning with a letter");
+        }
+        if value.is_empty() || value.len() > DIGEST_LIMIT {
+            return fail("its value is not one to 128 characters");
+        }
+        if !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        {
+            return fail("its value holds something that is not a letter, a digit, `-` or `_`");
+        }
+        Ok(Self(text.to_owned()))
+    }
+}
+
+impl fmt::Display for ContentDigest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A content digest that was not spelled as one is spelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MalformedContentDigest {
+    because: &'static str,
+}
+
+impl fmt::Display for MalformedContentDigest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "a content digest is `<algorithm>:<value>`, as in `sha256:9f86d0…`, and {}",
+            self.because
+        )
+    }
+}
+
+impl std::error::Error for MalformedContentDigest {}
 
 /// In what capacity a key vouches: `author`, `reviewer`, `release`, or whatever
 /// else a person is actually doing.
@@ -294,8 +510,8 @@ impl std::error::Error for MalformedKey {}
 
 /// Why a claim could not be read.
 ///
-/// Every variant names the line, because a claim is five lines and saying which
-/// one is the whole of the diagnosis.
+/// Every variant names the line, because a claim is five or seven lines and
+/// saying which one is the whole of the diagnosis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ClaimError {
@@ -348,9 +564,9 @@ impl fmt::Display for ClaimError {
         match self {
             Self::Preamble { found } => write!(
                 f,
-                "line 1 says `{found}`; a claim begins `{PREAMBLE}`, and a \
-                 reader that met another spelling would be guessing at what it \
-                 was leaving out"
+                "line 1 says `{found}`; a claim begins `{PREAMBLE}` or \
+                 `{FILE_PREAMBLE}`, and a reader that met another spelling \
+                 would be guessing at what it was leaving out"
             ),
             Self::Missing { header } => {
                 write!(f, "there is no `{header}` line, and a claim states one")
@@ -459,9 +675,195 @@ when 2026-08-24T09:12:04-06:00
         ));
     }
 
+    const FILE_EXAMPLE: &str = "\
+claim-1
+revision 33f863f19e9b19f47ae42e41b4c25f03acc3c14acca2da65ea6bb141016b487a
+file kmnpqrstvwxzkmnpqrstvwxz
+content sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+role reviewer
+key RWTd8LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
+when 2026-10-03T09:12:04-06:00
+";
+
+    fn file_example() -> Claim {
+        Claim::parse(FILE_EXAMPLE).expect("the example parses")
+    }
+
     #[test]
-    fn a_claim_1_is_refused_by_a_claim_0_reader() {
-        let text = EXAMPLE.replace(PREAMBLE, "claim-1");
+    fn a_whole_revision_claim_is_claim_0() {
+        let claim = example();
+        assert_eq!(claim.scope, Scope::Revision);
+        assert_eq!(claim.preamble(), PREAMBLE);
+        assert_eq!(claim.file(), None);
+    }
+
+    #[test]
+    fn a_claim_over_one_file_renders_the_bytes_it_was_read_from() {
+        let claim = file_example();
+        assert_eq!(claim.render(), FILE_EXAMPLE);
+        assert_eq!(claim.preamble(), FILE_PREAMBLE);
+        let (file, content) = claim.file().expect("a file");
+        assert_eq!(file.to_string(), "kmnpqrstvwxzkmnpqrstvwxz");
+        assert_eq!(content.algorithm(), "sha256");
+        assert_eq!(content.value().len(), 64);
+    }
+
+    /// One claim, one spelling: dropping the file from a `claim-1` is a
+    /// `claim-0`, byte for byte, and not a `claim-1` with lines missing.
+    #[test]
+    fn narrowing_and_widening_change_the_preamble() {
+        let mut claim = file_example();
+        claim.scope = Scope::Revision;
+        assert!(claim.render().starts_with("claim-0\n"));
+        assert_eq!(Claim::parse(&claim.render()), Ok(claim));
+    }
+
+    /// Decision 0001's rule, working as it said it would: a reader of the old
+    /// grammar meets the narrowing line and refuses the document.
+    #[test]
+    fn a_claim_1_body_under_claim_0_is_refused_at_its_file_line() {
+        let text = FILE_EXAMPLE.replace(FILE_PREAMBLE, PREAMBLE);
+        assert_eq!(
+            Claim::parse(&text),
+            Err(ClaimError::Unknown {
+                at: 3,
+                found: "file".to_owned()
+            })
+        );
+    }
+
+    /// And the other way: a `claim-1` without its file lines is not a claim
+    /// over the whole revision. The preamble decides the grammar.
+    #[test]
+    fn a_claim_0_body_under_claim_1_is_refused() {
+        let text = EXAMPLE.replace(PREAMBLE, FILE_PREAMBLE);
+        assert!(matches!(
+            Claim::parse(&text),
+            Err(ClaimError::OutOfOrder {
+                at: 3,
+                expected: "file",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_claim_1_refuses_a_header_its_grammar_does_not_name() {
+        let text = FILE_EXAMPLE.replace("role reviewer", "expires 2027-01-01T00:00:00+00:00");
+        assert!(matches!(
+            Claim::parse(&text),
+            Err(ClaimError::Unknown { at: 5, .. })
+        ));
+    }
+
+    #[test]
+    fn a_claim_1_refuses_its_headers_out_of_order() {
+        let text = FILE_EXAMPLE.replace(
+            "file kmnpqrstvwxzkmnpqrstvwxz\ncontent sha256:",
+            "content sha256:",
+        );
+        let text = text.replace(
+            "\nrole reviewer",
+            "\nfile kmnpqrstvwxzkmnpqrstvwxz\nrole reviewer",
+        );
+        assert!(matches!(
+            Claim::parse(&text),
+            Err(ClaimError::OutOfOrder {
+                at: 3,
+                expected: "file",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_claim_1_refuses_a_missing_or_repeated_line() {
+        let missing = FILE_EXAMPLE.replace("when 2026-10-03T09:12:04-06:00\n", "");
+        assert_eq!(
+            Claim::parse(&missing),
+            Err(ClaimError::Missing { header: "when" })
+        );
+        let repeated = FILE_EXAMPLE.replace(
+            "file kmnpqrstvwxzkmnpqrstvwxz\n",
+            "file kmnpqrstvwxzkmnpqrstvwxz\nfile kmnpqrstvwxzkmnpqrstvwxz\n",
+        );
+        assert!(matches!(
+            Claim::parse(&repeated),
+            Err(ClaimError::OutOfOrder { at: 4, .. })
+        ));
+        let trailing = format!("{FILE_EXAMPLE}looks fine to me\n");
+        assert_eq!(Claim::parse(&trailing), Err(ClaimError::Trailing { at: 8 }));
+    }
+
+    #[test]
+    fn a_claim_1_refuses_a_file_that_is_not_a_file_id() {
+        let text = FILE_EXAMPLE.replace("file kmnpqrstvwxzkmnpqrstvwxz", "file notes.md");
+        assert!(matches!(
+            Claim::parse(&text),
+            Err(ClaimError::Malformed {
+                at: 3,
+                header: "file",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_claim_1_refuses_content_that_is_not_a_digest() {
+        let text = FILE_EXAMPLE.replace("content sha256:", "content ");
+        assert!(matches!(
+            Claim::parse(&text),
+            Err(ClaimError::Malformed {
+                at: 4,
+                header: "content",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_content_digest_is_an_algorithm_and_a_value() {
+        assert!("sha256:9f86d0".parse::<ContentDigest>().is_ok());
+        assert!("blake3:AbC-_9".parse::<ContentDigest>().is_ok());
+        assert!("sha-512:00".parse::<ContentDigest>().is_ok());
+        for bad in [
+            "",
+            "9f86d0",
+            ":9f86d0",
+            "sha256:",
+            "SHA256:9f86d0",
+            "256sha:9f86d0",
+            "sha256:9f86 d0",
+            "sha256:9f86/d0",
+            "sha256:9f86:d0",
+            "an-algorithm-name-too-long:00",
+        ] {
+            assert!(bad.parse::<ContentDigest>().is_err(), "{bad:?}");
+        }
+        assert!(
+            format!("sha512:{}", "0".repeat(DIGEST_LIMIT))
+                .parse::<ContentDigest>()
+                .is_ok()
+        );
+        assert!(
+            format!("sha512:{}", "0".repeat(DIGEST_LIMIT + 1))
+                .parse::<ContentDigest>()
+                .is_err()
+        );
+    }
+
+    /// Never normalised: two digests are equal when they are the same
+    /// characters, because the tool comparing them is not this one.
+    #[test]
+    fn a_content_digest_is_compared_as_written() {
+        let lower: ContentDigest = "sha256:abcd".parse().unwrap();
+        let upper: ContentDigest = "sha256:ABCD".parse().unwrap();
+        assert_ne!(lower, upper);
+    }
+
+    #[test]
+    fn a_preamble_neither_grammar_names_is_refused() {
+        let text = EXAMPLE.replace(PREAMBLE, "claim-2");
         assert!(matches!(
             Claim::parse(&text),
             Err(ClaimError::Preamble { .. })

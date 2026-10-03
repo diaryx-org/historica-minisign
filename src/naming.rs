@@ -12,7 +12,11 @@
 //! claims/2026-04/2026-04-12 Initial commit — author.claim.txt
 //! claims/2026-08/2026-08-18 drop the private export — author.claim.txt
 //! claims/2026-08/2026-08-18 drop the private export — reviewer.claim.txt
+//! claims/2026-08/2026-08-18 drop the private export — reviewer mpqzkxtn.claim.txt
 //! ```
+//!
+//! The last is a claim over one file at that revision (decision 0004), which
+//! carries the file's ID after the role.
 //!
 //! A claim is filed beside the revision it vouches for, under the stem
 //! Historica gave that revision — which brings decision 0041's month directory
@@ -42,6 +46,11 @@ use crate::claim::{Claim, Key};
 /// `/` into the directories it names. Roughly one key in fourteen would put a
 /// path separator in this suffix and file its claim somewhere nobody asked for.
 pub const KEY_CHARS: usize = 8;
+
+/// Characters of a file ID in the name of a claim over one file.
+///
+/// A file ID is spelled in `k`–`z`, so this is always a filename.
+pub const FILE_CHARS: usize = 8;
 
 /// Characters of a claim digest where nothing else tells two claims apart.
 pub const CLAIM_DIGEST_CHARS: usize = 12;
@@ -159,11 +168,22 @@ pub fn stem_for<'a>(
 /// own `when` and subject where it does not. The fallback is deterministic from
 /// the claim alone, which is what lets a copy that has never seen the revision
 /// file the claim at all; `arrange` re-files it if the revision arrives.
+///
+/// A claim over one file (decision 0004) appends the file's ID, abbreviated to
+/// [`FILE_CHARS`], after the role. Its path would read better, but a path is
+/// not a fact about the claim: finding it means replaying the revision's tree,
+/// which a copy without the revision cannot do, and a path holds `/`, which a
+/// stem splits into directories. Without the suffix, every reviewer's claims
+/// over one revision's files would fall to the last tier at once.
 fn base(claim: &Claim, revisions: &BTreeMap<RevisionId, String>) -> String {
+    let file = match claim.file() {
+        Some((file, _)) => format!(" {}", file.abbreviate(FILE_CHARS)),
+        None => String::new(),
+    };
     match revisions.get(&claim.revision) {
-        Some(stem) => format!("{stem}{SEPARATOR}{}", claim.role),
+        Some(stem) => format!("{stem}{SEPARATOR}{}{file}", claim.role),
         None => format!(
-            "{}/{} {} {}",
+            "{}/{} {} {}{file}",
             prefix(&claim.when, MONTH_CHARS),
             prefix(&claim.when, DATE_CHARS),
             claim.role,

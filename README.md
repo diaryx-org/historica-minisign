@@ -47,6 +47,21 @@ digest pins its bytes, which pin its parents' digests, and so on to the roots �
 so signing the head signs the history behind it, and signing every revision is
 a choice rather than a requirement.
 
+A claim can also be narrower: one file as it stood at a revision, naming that
+file's content digest, which is what a reviewer who read one document can
+honestly sign.
+
+```console
+$ historica-minisign sign --role reviewer --file notes.md --content sha256:9f86d0…
+```
+
+It is written as `claim-1`, covers that file alone, neither the revision nor
+its history, and keeps standing for as long as the file's content digest now
+is the one it names. Comparing the two is the job of whatever tool computed the
+digest. This one records it and never computes it.
+[Decision 0004](docs/decisions/0004-a-claim-can-be-over-one-file.md) has the
+grammar and the argument.
+
 **Head statements are not built.** 0046 specifies a second document kind — a
 key, a counter, and the heads its history had at that moment — which is what
 detects a store presenting a subset of a history it has already shown you.
@@ -72,8 +87,9 @@ key RWTd8LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
 when 2026-08-24T09:12:04-06:00
 ```
 
-named by the SHA-256 of its own bytes, with an ordinary detached minisign
-signature beside it. Anything this tool can write, `minisign -Sm` can write;
+A claim over one file is a `claim-1`: seven lines, with `file` and `content`
+after `revision`. Either kind has an ordinary detached minisign signature
+beside it. Anything this tool can write, `minisign -Sm` can write;
 anything `minisign -Vm` accepts, this accepts. Tests pin both directions
 against the real command.
 

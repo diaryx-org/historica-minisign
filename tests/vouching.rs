@@ -15,7 +15,7 @@ use historica::core::RevisionId;
 use historica::record::{Clock, Kinds, Platform, Recording, Restriction, record};
 use historica::store::Store;
 use historica::working::Working;
-use historica_minisign::claim::{Claim, Role};
+use historica_minisign::claim::{Claim, ContentDigest, Role, Scope};
 use historica_minisign::sign::SecretKey;
 use historica_minisign::verify::Finding;
 use historica_minisign::{key, layout, naming, sign, trust, verify};
@@ -424,6 +424,7 @@ fn a_signature_by_another_key_is_refused() {
     // to.
     let claim = Claim {
         revision: head(&store),
+        scope: Scope::Revision,
         role: "reviewer".parse().expect("a role"),
         key: their_key,
         when: Platform.now().expect("a clock"),
@@ -705,4 +706,423 @@ fn one_claim_under_two_names_is_one_claim() {
             .notes()
             .any(|finding| matches!(finding, Finding::Duplicate { .. }))
     );
+}
+
+// ---------------------------------------------------------------------------
+// Claims over one file — decision 0004
+// ---------------------------------------------------------------------------
+
+/// Record one more revision of the folder `store` lives in, after writing
+/// `files` into it.
+fn step(store: &mut Store, files: &[(&str, &str)], message: &str) -> RevisionId {
+    let folder = store.root().parent().expect("the folder").to_path_buf();
+    for (name, text) in files {
+        fs::write(folder.join(name), text).expect("a file");
+    }
+    let working = Working::read(&folder, store.skipped()).expect("the folder");
+    let recording = Recording {
+        parents: store.history().heads().into_iter().collect(),
+        author: "Adam Harris <adam@example.com>".to_owned(),
+        when: Platform.now().expect("a clock"),
+        message: message.to_owned(),
+        moves: Vec::new(),
+        at: Vec::new(),
+        accepted: BTreeSet::new(),
+        only: Restriction::Everything,
+        kinds: Kinds::default(),
+        extensions: BTreeMap::new(),
+    };
+    record(store, &working, &recording, &mut Platform).expect("a revision");
+    head(store)
+}
+
+/// The file at `path` in the tree of `revision`.
+fn file_at(store: &Store, revision: &RevisionId, path: &str) -> historica::core::FileId {
+    let tree = store.tree(revision).expect("the tree");
+    let [file] = tree.at(path)[..] else {
+        panic!("one file at {path}");
+    };
+    file
+}
+
+/// A stand-in for the claimant's tool's content digest. This crate never
+/// computes one, so the tests supply it the way a caller would.
+fn content_of(text: &str) -> ContentDigest {
+    format!("sha256:{}", historica::format::digest(text.as_bytes()))
+        .parse()
+        .expect("a content digest")
+}
+
+fn vouch_for_file(
+    store: &Store,
+    revision: RevisionId,
+    file: historica::core::FileId,
+    content: ContentDigest,
+    role: &str,
+    secret: &SecretKey,
+) -> Claim {
+    let claim = sign::file_claim_for(
+        revision,
+        file,
+        content,
+        role.parse::<Role>().expect("a role"),
+        secret,
+        &Platform,
+    )
+    .expect("a claim");
+    let stem = filed(store, &claim);
+    sign::write(store.filesystem(), store.root(), &claim, &stem, secret).expect("it written");
+    claim
+}
+
+#[test]
+fn a_claim_over_one_file_is_written_as_claim_1_and_read_back() {
+    let directory = scratch("file-round-trip");
+    let store = store_of(&directory, 1);
+    let (secret, key) = keys(&directory);
+    believe(&store, &key);
+    let revision = head(&store);
+    let file = file_at(&store, &revision, "notes.txt");
+    let claim = vouch_for_file(
+        &store,
+        revision,
+        file,
+        content_of("line 0\n"),
+        "reviewer",
+        &secret,
+    );
+
+    let written = fs::read_to_string(file_of(&store, &claim)).expect("the claim");
+    assert!(written.starts_with("claim-1\n"), "{written}");
+    assert_eq!(Claim::parse(&written).as_ref(), Ok(&claim));
+
+    let store = reopen(&store);
+    let report = verify::verify(&store).expect("a report");
+    assert!(report.ok(), "{:?}", report.findings().collect::<Vec<_>>());
+    let [held] = report.held() else {
+        panic!("one claim");
+    };
+    assert_eq!(held.claim, claim);
+    assert_eq!(
+        held.claim.scope,
+        Scope::File {
+            file,
+            content: content_of("line 0\n")
+        }
+    );
+    assert_eq!(
+        held.file,
+        verify::FileCheck::Found {
+            path: "notes.txt".to_owned()
+        }
+    );
+    assert!(held.counts());
+    assert!(report.vouches_for_file(&file, &content_of("line 0\n")));
+    assert!(
+        !report.vouches_for_file(&file, &content_of("line 1\n")),
+        "another content is not what was vouched for"
+    );
+    assert_eq!(report.vouched_files().count(), 1);
+}
+
+/// One file is not the revision, nor the history behind it, so `vouched`,
+/// `vouches_for` and `complete` answer exactly as they would without it.
+#[test]
+fn a_claim_over_one_file_vouches_for_no_revision() {
+    let directory = scratch("file-not-revision");
+    let store = store_of(&directory, 3);
+    let (secret, key) = keys(&directory);
+    believe(&store, &key);
+    let revision = head(&store);
+    let file = file_at(&store, &revision, "notes.txt");
+    vouch_for_file(
+        &store,
+        revision,
+        file,
+        content_of("line 2\n"),
+        "reviewer",
+        &secret,
+    );
+
+    let store = reopen(&store);
+    let report = verify::verify(&store).expect("a report");
+    assert!(report.ok());
+    assert!(report.vouched().is_empty());
+    assert!(!report.vouches_for(&revision));
+    assert!(!report.complete());
+    assert!(
+        report
+            .notes()
+            .any(|finding| matches!(finding, Finding::Unvouched { revision: r } if *r == revision))
+    );
+
+    // A whole-revision claim beside it is what makes the store complete, and
+    // the one-file claim changes nothing about that answer.
+    vouch(&store, revision, "author", &secret);
+    let store = reopen(&store);
+    let report = verify::verify(&store).expect("a report");
+    assert!(report.complete());
+    assert_eq!(report.vouched().len(), 3);
+    assert_eq!(report.vouched_files().count(), 1);
+}
+
+/// The point of naming the content: a later revision that leaves the file's
+/// content alone does not unseat the claim, and one that changes it does —
+/// judged by the caller, from the material the report hands back.
+#[test]
+fn a_claim_over_one_file_stands_while_its_content_does() {
+    let directory = scratch("file-stands");
+    let mut store = store_of(&directory, 1);
+    let (secret, key) = keys(&directory);
+    believe(&store, &key);
+    let first = head(&store);
+    let file = file_at(&store, &first, "notes.txt");
+    vouch_for_file(
+        &store,
+        first,
+        file,
+        content_of("line 0\n"),
+        "reviewer",
+        &secret,
+    );
+
+    // Another file changes; this one does not.
+    let second = step(&mut store, &[("other.txt", "elsewhere\n")], "another file");
+    assert_eq!(file_at(&store, &second, "notes.txt"), file);
+    let now = fs::read_to_string(store.root().parent().unwrap().join("notes.txt")).unwrap();
+    let report = verify::verify(&reopen(&store)).expect("a report");
+    assert!(report.vouches_for_file(&file, &content_of(&now)));
+
+    // Now it does.
+    step(&mut store, &[("notes.txt", "rewritten\n")], "a rewrite");
+    let now = fs::read_to_string(store.root().parent().unwrap().join("notes.txt")).unwrap();
+    let report = verify::verify(&reopen(&store)).expect("a report");
+    assert!(
+        report.ok(),
+        "the claim is still a true claim about its revision"
+    );
+    assert!(!report.vouches_for_file(&file, &content_of(&now)));
+}
+
+#[test]
+fn a_claim_over_a_file_its_revision_does_not_hold_is_an_error() {
+    let directory = scratch("file-missing");
+    let mut store = store_of(&directory, 1);
+    let (secret, key) = keys(&directory);
+    believe(&store, &key);
+    let first = head(&store);
+    // A real file, added after the revision the claim names.
+    let second = step(&mut store, &[("later.txt", "later\n")], "later");
+    let later = file_at(&store, &second, "later.txt");
+    assert_eq!(
+        verify::find_file(&store, &first, &later),
+        verify::FileCheck::Missing
+    );
+    vouch_for_file(
+        &store,
+        first,
+        later,
+        content_of("later\n"),
+        "reviewer",
+        &secret,
+    );
+
+    let store = reopen(&store);
+    let report = verify::verify(&store).expect("a report");
+    assert!(!report.ok());
+    assert!(
+        report.errors().any(|finding| matches!(
+            finding,
+            Finding::NoSuchFile { revision, file, .. } if *revision == first && *file == later
+        )),
+        "{:?}",
+        report.findings().collect::<Vec<_>>()
+    );
+    let [held] = report.held() else {
+        panic!("one claim");
+    };
+    assert!(held.verified, "the signature is good");
+    assert_eq!(held.file, verify::FileCheck::Missing);
+    assert!(!held.counts(), "and the claim counts for nothing");
+    assert!(!report.vouches_for_file(&later, &content_of("later\n")));
+}
+
+#[test]
+fn a_claim_over_one_file_by_an_unknown_key_is_a_note() {
+    let directory = scratch("file-untrusted");
+    let store = store_of(&directory, 1);
+    let (secret, _) = keys(&directory);
+    let revision = head(&store);
+    let file = file_at(&store, &revision, "notes.txt");
+    vouch_for_file(
+        &store,
+        revision,
+        file,
+        content_of("line 0\n"),
+        "reviewer",
+        &secret,
+    );
+
+    let store = reopen(&store);
+    let report = verify::verify(&store).expect("a report");
+    assert!(report.ok());
+    assert!(
+        report
+            .notes()
+            .any(|finding| matches!(finding, Finding::Untrusted { .. }))
+    );
+    assert!(report.held()[0].verified);
+    assert!(!report.held()[0].counts());
+    assert_eq!(report.vouched_files().count(), 0);
+}
+
+/// Claims travel by file sync and history by `receive`, so a claim over a
+/// file at a revision that has not arrived is ordinary — and unjudgeable, so
+/// it does not count until the revision is here.
+#[test]
+fn a_claim_over_one_file_at_an_absent_revision_is_a_note_and_does_not_count() {
+    let directory = scratch("file-absent");
+    let store = store_of(&directory, 1);
+    let (secret, key) = keys(&directory);
+    believe(&store, &key);
+    let file = file_at(&store, &head(&store), "notes.txt");
+    let elsewhere = historica::format::digest(b"a revision in somebody else's store");
+    vouch_for_file(
+        &store,
+        elsewhere,
+        file,
+        content_of("line 0\n"),
+        "reviewer",
+        &secret,
+    );
+
+    let store = reopen(&store);
+    let report = verify::verify(&store).expect("a report");
+    assert!(report.ok());
+    assert!(
+        report
+            .notes()
+            .any(|finding| matches!(finding, Finding::Absent { .. }))
+    );
+    assert_eq!(report.held()[0].file, verify::FileCheck::Unknown);
+    assert!(!report.held()[0].counts());
+}
+
+/// A claim over one file is filed beside its revision with the file's ID
+/// after the role, so one reviewer's claims over two files of one revision,
+/// and a claim over the whole of it, take three plain names.
+#[test]
+fn claims_over_two_files_of_one_revision_are_two_names() {
+    let directory = scratch("file-names");
+    let mut store = store_of(&directory, 1);
+    let (secret, key) = keys(&directory);
+    believe(&store, &key);
+    let revision = step(&mut store, &[("other.txt", "elsewhere\n")], "another file");
+    let notes = file_at(&store, &revision, "notes.txt");
+    let other = file_at(&store, &revision, "other.txt");
+
+    let one = vouch_for_file(
+        &store,
+        revision,
+        notes,
+        content_of("line 0\n"),
+        "reviewer",
+        &secret,
+    );
+    let two = vouch_for_file(
+        &store,
+        revision,
+        other,
+        content_of("elsewhere\n"),
+        "reviewer",
+        &secret,
+    );
+    let whole = vouch(&store, revision, "reviewer", &secret);
+
+    let names: Vec<String> = [&one, &two, &whole]
+        .iter()
+        .map(|claim| filed(&store, claim))
+        .collect();
+    assert!(names[0].ends_with(&format!(
+        " — reviewer {}",
+        notes.abbreviate(naming::FILE_CHARS)
+    )));
+    assert!(names[1].ends_with(&format!(
+        " — reviewer {}",
+        other.abbreviate(naming::FILE_CHARS)
+    )));
+    assert!(names[2].ends_with(" — reviewer"));
+
+    let store = reopen(&store);
+    let report = verify::verify(&store).expect("a report");
+    assert!(report.ok());
+    assert!(
+        !report
+            .notes()
+            .any(|finding| matches!(finding, Finding::Misfiled { .. })),
+        "{:?}",
+        report.findings().collect::<Vec<_>>()
+    );
+    assert_eq!(report.held().len(), 3);
+    assert_eq!(report.vouched_files().count(), 2);
+}
+
+/// The signature covers the file and content lines as it covers every other,
+/// so a claim edited to vouch for other content is refused.
+#[test]
+fn a_claim_1_with_a_bad_signature_is_refused() {
+    let directory = scratch("file-refused");
+    let store = store_of(&directory, 1);
+    let (secret, key) = keys(&directory);
+    believe(&store, &key);
+    let revision = head(&store);
+    let file = file_at(&store, &revision, "notes.txt");
+    let claim = vouch_for_file(
+        &store,
+        revision,
+        file,
+        content_of("line 0\n"),
+        "reviewer",
+        &secret,
+    );
+
+    // Change what the claim says the content was, under its own name: the
+    // signature covers the content line as it covers every other.
+    let path = file_of(&store, &claim);
+    let text = fs::read_to_string(&path).expect("the claim");
+    fs::write(
+        &path,
+        text.replace(
+            &format!("content {}", content_of("line 0\n")),
+            &format!("content {}", content_of("forged\n")),
+        ),
+    )
+    .expect("the edit");
+
+    let store = reopen(&store);
+    let report = verify::verify(&store).expect("a report");
+    assert!(
+        report
+            .errors()
+            .any(|finding| matches!(finding, Finding::Refused { .. }))
+    );
+    assert!(!report.vouches_for_file(&file, &content_of("forged\n")));
+}
+
+/// Decision 0004 changes nothing a store already holds: a whole-revision
+/// claim is still written as the same five lines of `claim-0`, so it is the
+/// same file it would have been before, and a reader that predates 0004 reads
+/// it.
+#[test]
+fn a_whole_revision_claim_is_still_written_as_claim_0() {
+    let directory = scratch("still-claim-0");
+    let store = store_of(&directory, 1);
+    let (secret, _) = keys(&directory);
+    let claim = vouch(&store, head(&store), "author", &secret);
+
+    let written = fs::read_to_string(file_of(&store, &claim)).expect("the claim");
+    assert_eq!(written.lines().count(), 5);
+    assert!(written.starts_with("claim-0\nrevision "), "{written}");
+    assert_eq!(claim.scope, Scope::Revision);
+    assert!(!filed(&store, &claim).ends_with(' '));
 }

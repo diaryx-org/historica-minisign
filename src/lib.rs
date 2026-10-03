@@ -12,9 +12,10 @@
 //! This is that tool. It writes two kinds of file and reads a third:
 //!
 //! - a **claim** ([`claim`]) in `history/claims/`, one key vouching for one
-//!   revision digest in one role at one moment, filed beside the revision it
-//!   vouches for ([`naming`]) and identified by the SHA-256 of its own bytes
-//!   rather than by what it is called;
+//!   revision digest in one role at one moment — or for one file at that
+//!   revision, naming the file's content digest (decision 0004) — filed beside
+//!   the revision it vouches for ([`naming`]) and identified by the SHA-256 of
+//!   its own bytes rather than by what it is called;
 //! - its **signature**, minisign, detached, beside it;
 //! - the **trust policy** ([`trust`]) in `history/trust/`, one key to a file,
 //!   which says whose word this copy accepts and never crosses a store
@@ -59,6 +60,6 @@ pub mod key;
 #[cfg(feature = "sign")]
 pub mod sign;
 
-pub use claim::{Claim, ClaimError, Key, Role};
+pub use claim::{Claim, ClaimError, ContentDigest, Key, Role, Scope};
 pub use trust::Trust;
-pub use verify::{Finding, Report, Severity};
+pub use verify::{FileCheck, Finding, Report, Severity};

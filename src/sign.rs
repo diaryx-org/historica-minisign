@@ -18,7 +18,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use historica::core::RevisionId;
+use historica::core::{FileId, RevisionId};
 use historica::fs::Filesystem;
 use historica::record::Clock;
 use minisign::PublicKey;
@@ -28,7 +28,7 @@ use minisign::PublicKey;
 /// minisign writes, and that includes the key it reads.
 pub use minisign::SecretKey;
 
-use crate::claim::{Claim, Key, Role};
+use crate::claim::{Claim, ContentDigest, Key, Role, Scope};
 use crate::layout::{claim_file, signature_file};
 
 /// What minisign puts in an untrusted comment, and therefore what this puts
@@ -68,12 +68,36 @@ pub fn claim_for(
 ) -> Result<Claim, SignError> {
     Ok(Claim {
         revision,
+        scope: Scope::Revision,
         role,
         key: public_key(secret)?,
         when: clock.now().map_err(|error| SignError::Clock {
             because: error.to_string(),
         })?,
     })
+}
+
+/// The claim a key would make about one file at a revision, now.
+///
+/// Decision 0004. `content` is the file's content digest as the caller's tool
+/// computes it; nothing here computes or checks it beyond its spelling, which
+/// [`ContentDigest`]'s parse has already done.
+///
+/// Nothing here checks that the revision's tree holds `file` either, because
+/// this has no store to look in. [`crate::verify::find_file`] is that check,
+/// and a caller about to write the claim should make it: a claim over a file
+/// its revision does not hold is an error [`crate::verify::verify`] reports.
+pub fn file_claim_for(
+    revision: RevisionId,
+    file: FileId,
+    content: ContentDigest,
+    role: Role,
+    secret: &SecretKey,
+    clock: &dyn Clock,
+) -> Result<Claim, SignError> {
+    let mut claim = claim_for(revision, role, secret, clock)?;
+    claim.scope = Scope::File { file, content };
+    Ok(claim)
 }
 
 /// The public key a secret key belongs to, spelled as a claim spells it.

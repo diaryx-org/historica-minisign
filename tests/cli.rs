@@ -508,3 +508,117 @@ fn a_second_key_for_one_person_takes_a_name_of_its_own() {
     assert!(listed.contains(&first), "{listed}");
     assert!(listed.contains(&second), "{listed}");
 }
+
+/// Decision 0004, at the prompt: `--file` and `--content` make a claim over
+/// one file, which `verify` lists by the file's path and does not count
+/// towards the revision.
+#[test]
+fn sign_vouches_for_one_file_when_told_which() {
+    let directory = scratch("one-file");
+    let folder = work(&directory);
+    let key = key(&directory);
+    let secret = directory.join("keys/minisign.key");
+    let password = directory.join("password");
+    let content = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+    let signed = out(
+        &folder,
+        &[
+            "sign",
+            "--role",
+            "reviewer",
+            "--file",
+            "notes.txt",
+            "--content",
+            content,
+            "--key",
+            secret.to_str().unwrap(),
+            "--password-file",
+            password.to_str().unwrap(),
+        ],
+    );
+    assert!(signed.contains("vouches for notes.txt ("), "{signed}");
+    assert!(signed.contains(content), "{signed}");
+
+    let written = fs::read_to_string(
+        under(&folder.join("history/claims"))
+            .into_iter()
+            .find(|path| path.to_string_lossy().ends_with(".claim.txt"))
+            .expect("a claim"),
+    )
+    .expect("its text");
+    assert!(written.starts_with("claim-1\n"), "{written}");
+    assert!(
+        written.contains(&format!("\ncontent {content}\n")),
+        "{written}"
+    );
+
+    out(
+        &folder,
+        &["trust", "add", &key, "The Test <test@example.com>"],
+    );
+    let verified = out(&folder, &["verify"]);
+    assert!(verified.contains("notes.txt ("), "{verified}");
+    assert!(
+        verified.contains("0 of 1 revisions are vouched for"),
+        "a claim over one file vouches for no revision: {verified}"
+    );
+    assert!(
+        verified.contains("1 claim counts over one file"),
+        "{verified}"
+    );
+    assert_eq!(
+        run(&folder, &["verify", "--complete"]).status.code(),
+        Some(1),
+        "and does not make the store complete"
+    );
+}
+
+#[test]
+fn a_file_the_revision_does_not_hold_is_refused_before_signing() {
+    let directory = scratch("no-such-file");
+    let folder = work(&directory);
+    key(&directory);
+    let secret = directory.join("keys/minisign.key");
+    let password = directory.join("password");
+
+    let refused = run(
+        &folder,
+        &[
+            "sign",
+            "--file",
+            "elsewhere.txt",
+            "--content",
+            "sha256:00",
+            "--key",
+            secret.to_str().unwrap(),
+            "--password-file",
+            password.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("holds no file at elsewhere.txt"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        under(&folder.join("history/claims")).is_empty(),
+        "nothing was written"
+    );
+}
+
+#[test]
+fn a_file_without_its_content_is_a_usage_error() {
+    let directory = scratch("file-alone");
+    let folder = work(&directory);
+
+    for arguments in [
+        &["sign", "--file", "notes.txt"][..],
+        &["sign", "--content", "sha256:00"][..],
+        &["sign", "--file", "notes.txt", "--content", "not a digest"][..],
+    ] {
+        let refused = run(&folder, arguments);
+        assert_eq!(refused.status.code(), Some(2), "{arguments:?}");
+    }
+}

@@ -15,13 +15,13 @@ use historica::fs::Filesystem;
 use historica::record::Platform;
 use historica::store::{Store, StoreError};
 
-use historica::core::RevisionId;
+use historica::core::{FileId, RevisionId};
 
-use historica_minisign::claim::{Claim, Key, Role};
+use historica_minisign::claim::{Claim, ContentDigest, Key, Role};
 use historica_minisign::layout::{
     CLAIM_SUFFIX, SIGNATURE_SUFFIX, claim_file, claims, signature_file,
 };
-use historica_minisign::verify::{Finding, Severity};
+use historica_minisign::verify::{FileCheck, Finding, Severity};
 use historica_minisign::{key, naming, sign, trust, verify};
 
 /// What `historica-minisign` with no arguments prints.
@@ -29,6 +29,7 @@ pub const USAGE: &str = "\
 usage: historica-minisign [-C <dir>] <command> [<arguments>]
 
   sign [<target>] [--role <role>] [--key <path>] [--password-file <path>]
+       [--file <path or file ID> --content <digest>]
                            vouch for a revision: write a claim into
                            history/claims/ and sign it. The role is what you
                            were doing — `author`, `reviewer`, `release`, or
@@ -36,7 +37,12 @@ usage: historica-minisign [-C <dir>] <command> [<arguments>]
                            claim covers everything the revision descends
                            from, so signing the head signs the history. The
                            password is asked for at the terminal unless
-                           --password-file names a file, or `-` for stdin
+                           --password-file names a file, or `-` for stdin.
+                           With --file and --content, vouch for that one file
+                           as it stood at the revision, and nothing else;
+                           <digest> is its content digest as your tool spells
+                           it (`sha256:…`), which this tool records and never
+                           computes
   arrange [--dry-run] [--prune]
                            re-file every claim under the name this tool would
                            choose for it, renaming and never rewriting. Only
@@ -183,11 +189,15 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
     let mut role = "author".to_owned();
     let mut key_path: Option<PathBuf> = None;
     let mut password_file: Option<PathBuf> = None;
+    let mut file: Option<String> = None;
+    let mut content: Option<String> = None;
 
     let mut rest = arguments.iter();
     while let Some(argument) = rest.next() {
         match argument.as_str() {
             "--role" => role = value(&mut rest, "--role")?,
+            "--file" => file = Some(value(&mut rest, "--file")?),
+            "--content" => content = Some(value(&mut rest, "--content")?),
             "--key" => key_path = Some(PathBuf::from(value(&mut rest, "--key")?)),
             "--password-file" => {
                 password_file = Some(PathBuf::from(value(&mut rest, "--password-file")?));
@@ -209,6 +219,28 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
     let role: Role = role
         .parse()
         .map_err(|error| Failure::usage(format!("--role: {error}")))?;
+    // Decision 0004: a claim over one file names both, or it is a claim over
+    // the whole revision and names neither.
+    let one_file = match (file, content) {
+        (None, None) => None,
+        (Some(file), Some(content)) => {
+            let content: ContentDigest = content
+                .parse()
+                .map_err(|error| Failure::usage(format!("--content: {error}")))?;
+            Some((file, content))
+        }
+        (Some(_), None) => {
+            return Err(Failure::usage(
+                "--file wants --content: a claim over one file names the \
+                 content it vouched for",
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(Failure::usage(
+                "--content wants --file: it is the content of one file",
+            ));
+        }
+    };
 
     let store = open(base)?;
     let revision = match spelling.as_deref() {
@@ -230,7 +262,19 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
     let password = password(password_file.as_deref())?;
     let secret = key::load(&path, password).map_err(Failure::error)?;
 
-    let claim = sign::claim_for(revision, role, &secret, &Platform).map_err(Failure::error)?;
+    let (claim, path_in_tree) = match one_file {
+        None => (
+            sign::claim_for(revision, role, &secret, &Platform).map_err(Failure::error)?,
+            None,
+        ),
+        Some((spelling, content)) => {
+            let (file, path) = file_at(&store, &revision, &spelling)?;
+            let claim = sign::file_claim_for(revision, file, content, role, &secret, &Platform)
+                .map_err(Failure::error)?;
+            (claim, Some(path))
+        }
+    };
+    let subject = subject(&claim, path_in_tree.as_deref());
     let policy = trust::Trust::read(store.filesystem(), store.root())?;
     let known = policy.who(&claim.key).map(str::to_owned);
 
@@ -241,13 +285,7 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
     if let Some(held) = report.held().iter().find(|held| held.claim == claim) {
         let path = held.path.clone();
         return printing(|out| {
-            writeln!(
-                out,
-                "{} vouches for {} as {}",
-                claim.key,
-                revision.abbreviate(12),
-                claim.role
-            )?;
+            writeln!(out, "{} vouches for {subject} as {}", claim.key, claim.role)?;
             writeln!(out, "  {}", path.display())?;
             writeln!(out, "\nthis store already held that claim, unchanged")
         });
@@ -269,13 +307,7 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
         .map_err(Failure::error)?;
 
     printing(|out| {
-        writeln!(
-            out,
-            "{} vouches for {} as {}",
-            claim.key,
-            revision.abbreviate(12),
-            claim.role
-        )?;
+        writeln!(out, "{} vouches for {subject} as {}", claim.key, claim.role)?;
         writeln!(out, "  {}", written.claim.display())?;
         writeln!(out, "  {}", written.signature.display())?;
         if written.already {
@@ -292,6 +324,58 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
             ),
         }
     })
+}
+
+/// The file `spelling` names at `revision`: a path in that revision's tree,
+/// or failing that a file ID it holds. Refused if it is neither, because the
+/// claim would be one `verify` calls an error.
+fn file_at(
+    store: &Store,
+    revision: &RevisionId,
+    spelling: &str,
+) -> Result<(FileId, String), Failure> {
+    let tree = store.tree(revision).map_err(|error| {
+        Failure::error(format!(
+            "the files at {} cannot be read, so no file there can be vouched \
+             for: {error}",
+            revision.abbreviate(12)
+        ))
+    })?;
+    match tree.at(spelling).as_slice() {
+        [file] => return Ok((*file, spelling.to_owned())),
+        [] => {}
+        _ => {
+            return Err(Failure::error(format!(
+                "{} holds more than one file at {spelling}; name the one you \
+                 mean by its file ID",
+                revision.abbreviate(12)
+            )));
+        }
+    }
+    let unheld = || {
+        Failure::error(format!(
+            "{} holds no file at {spelling}, nor one with that ID",
+            revision.abbreviate(12)
+        ))
+    };
+    let file: FileId = spelling.parse().map_err(|_| unheld())?;
+    match verify::find_file(store, revision, &file) {
+        FileCheck::Found { path } => Ok((file, path)),
+        _ => Err(unheld()),
+    }
+}
+
+/// What a claim vouches for, as one phrase: a revision, or a file at one.
+fn subject(claim: &Claim, path: Option<&str>) -> String {
+    let revision = claim.revision.abbreviate(12);
+    match claim.file() {
+        None => revision,
+        Some((file, content)) => format!(
+            "{} ({}) at {revision}, content {content},",
+            path.unwrap_or("a file"),
+            file.abbreviate(naming::FILE_CHARS)
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -339,10 +423,14 @@ fn verify_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
                 .who
                 .clone()
                 .unwrap_or_else(|| "a key this copy does not hold".to_owned());
+            let path = match &held.file {
+                FileCheck::Found { path } => Some(path.as_str()),
+                _ => None,
+            };
             writeln!(
                 out,
                 "  {} as {} by {who}{}",
-                held.claim.revision.abbreviate(12),
+                subject(&held.claim, path),
                 held.claim.role,
                 if held.verified { "" } else { " — UNVERIFIED" }
             )?;
@@ -365,6 +453,18 @@ fn verify_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
                 "\n{} of {} revisions are vouched for",
                 report.vouched().len(),
                 report.revisions()
+            )?;
+        }
+        let files = report.vouched_files().count();
+        if files > 0 {
+            writeln!(
+                out,
+                "{files} {} over one file, each for that file's content alone",
+                if files == 1 {
+                    "claim counts"
+                } else {
+                    "claims count"
+                }
             )?;
         }
 

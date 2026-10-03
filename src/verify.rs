@@ -18,6 +18,27 @@
 //! cover every head and you have covered everything. Naming each uncovered
 //! revision instead would print a thousand notes that all say the one thing.
 //!
+//! # A claim over one file
+//!
+//! Decision 0004. A `claim-1` vouches for one file as it stood at a revision,
+//! and holds when its signature is good, this copy holds the revision, and that
+//! revision's tree holds the file — [`Held::file`] says which of those it came
+//! to, and [`Finding::NoSuchFile`] is the error for a file that is not there.
+//!
+//! It vouches for nothing else. Not the revision's other files, and not the
+//! ancestry: a reviewer who read one document has said nothing about who wrote
+//! the rest, and the digest that pins the revision's parents is not something
+//! they looked at. So a one-file claim never enters [`Report::vouched`], never
+//! answers [`Report::vouches_for`], and never makes a store
+//! [`Report::complete`]. Those are whole-revision questions, and a one-file
+//! claim reaches them only as any claim does: by being an error.
+//!
+//! Whether such a claim still *stands* is not this module's question either.
+//! It stands while the content digest it names is the file's content digest
+//! now, and only the claimant's kind of tool knows what that is. What this
+//! reports is the material: [`Report::vouched_files`] and
+//! [`Report::vouches_for_file`].
+//!
 //! # What a name can say, and what it cannot
 //!
 //! Decision 0003: a claim is identified by parsing it, never by reading its
@@ -46,13 +67,13 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use historica::core::RevisionId;
+use historica::core::{FileId, RevisionId};
 use historica::format::digest;
 use historica::fs::{Filesystem, Kind, read_to_string};
 use historica::store::{Store, platform_name};
 use minisign_verify::Signature;
 
-use crate::claim::{Claim, ClaimError, Key};
+use crate::claim::{Claim, ClaimError, ContentDigest, Key, Scope};
 use crate::layout::{
     CLAIM_SUFFIX, claims as claims_dir, digest_of_name, is_claim_name, signed_name,
 };
@@ -143,6 +164,19 @@ pub enum Finding {
         /// What it vouches for.
         revision: RevisionId,
     },
+    /// A claim over one file the revision it names does not hold.
+    ///
+    /// Decision 0004. The revision is here, so its tree is all there is to
+    /// know, and the file is not in it: the claim vouches for something that
+    /// was never at that revision.
+    NoSuchFile {
+        /// The claim.
+        path: PathBuf,
+        /// The revision it names.
+        revision: RevisionId,
+        /// The file it names.
+        file: FileId,
+    },
     /// A head no trusted key vouches for.
     Unvouched {
         /// The head.
@@ -170,6 +204,7 @@ impl Finding {
             | Self::Unsigned { .. }
             | Self::Orphaned { .. }
             | Self::Refused { .. }
+            | Self::NoSuchFile { .. }
             | Self::MalformedTrust { .. } => Severity::Error,
             Self::Untrusted { .. }
             | Self::Absent { .. }
@@ -238,6 +273,16 @@ impl fmt::Display for Finding {
                 "{} vouches for {revision}, which this store does not hold",
                 path.display()
             ),
+            Self::NoSuchFile {
+                path,
+                revision,
+                file,
+            } => write!(
+                f,
+                "{} vouches for the file {file} at {revision}, which that \
+                 revision does not hold",
+                path.display()
+            ),
             Self::Unvouched { revision } => write!(
                 f,
                 "no trusted key vouches for the head {revision}, nor for \
@@ -263,13 +308,42 @@ pub struct Held {
     pub verified: bool,
     /// Who the policy takes that key to speak for, if it holds it.
     pub who: Option<String>,
+    /// For a claim over one file, what the revision's tree says about it.
+    pub file: FileCheck,
 }
 
 impl Held {
-    /// Whether this claim counts: signed by a key this copy believes.
+    /// Whether this claim counts: signed by a key this copy believes — and,
+    /// for a claim over one file, over a file its revision holds.
+    ///
+    /// A whole-revision claim counts whether or not this copy holds its
+    /// revision, as it always has; [`Report::vouched`] is where presence
+    /// matters. A one-file claim cannot be judged without the revision, so
+    /// until the revision arrives it does not count.
     pub fn counts(&self) -> bool {
-        self.verified && self.who.is_some()
+        self.verified
+            && self.who.is_some()
+            && matches!(self.file, FileCheck::Whole | FileCheck::Found { .. })
     }
+}
+
+/// What a revision's tree says about the file a claim names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileCheck {
+    /// The claim is over a whole revision, and names no file.
+    Whole,
+    /// The revision holds the file, at this path.
+    Found {
+        /// Where the file sat at that revision.
+        path: String,
+    },
+    /// The revision is here and does not hold the file:
+    /// [`Finding::NoSuchFile`].
+    Missing,
+    /// This copy cannot say. The revision is not here, which is
+    /// [`Finding::Absent`]'s ordinary case, or its tree will not replay, which
+    /// is `historica check`'s to report.
+    Unknown,
 }
 
 /// What `verify` found.
@@ -326,8 +400,36 @@ impl Report {
     }
 
     /// Whether a trusted key vouches for this revision.
+    ///
+    /// A whole-revision question: a claim over one file at the revision does
+    /// not answer it.
     pub fn vouches_for(&self, revision: &RevisionId) -> bool {
         self.vouched.contains(revision)
+    }
+
+    /// Every claim over one file that counts, in the order [`Report::held`]
+    /// gives them: signed, by a key this copy believes, over a file its
+    /// revision holds.
+    ///
+    /// Each one's [`Claim::file`] is the file and the content digest it
+    /// vouched for. Whether it still stands is the caller's to judge, by
+    /// comparing that digest with the file's content digest now.
+    pub fn vouched_files(&self) -> impl Iterator<Item = &Held> {
+        self.held
+            .iter()
+            .filter(|held| matches!(held.claim.scope, Scope::File { .. }) && held.counts())
+    }
+
+    /// Whether a claim that counts vouches for this file with this content.
+    ///
+    /// The comparison a reader's tool makes to ask whether a claim stands,
+    /// given the file's content digest now: a claim made at any revision
+    /// answers, so a later revision that left the content alone does not
+    /// unseat it. Equality is of the digests as spelled; see
+    /// [`ContentDigest`].
+    pub fn vouches_for_file(&self, file: &FileId, content: &ContentDigest) -> bool {
+        self.vouched_files()
+            .any(|held| held.claim.file() == Some((file, content)))
     }
 
     /// Whether nothing is wrong. Notes do not affect this.
@@ -429,6 +531,9 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
     // Pass two: what each claim amounts to. Deduplicated on the digest computed
     // above and never on the name, so one claim under two names is one claim.
     let mut seen: BTreeMap<RevisionId, PathBuf> = BTreeMap::new();
+    // One tree per revision, however many files of it are claimed. `None` is a
+    // tree that would not replay.
+    let mut trees: BTreeMap<RevisionId, Option<historica::tree::Tree>> = BTreeMap::new();
     for (name, path, bytes, id, claim) in read {
         if let Some(first) = seen.get(&id) {
             report.findings.push(Finding::Duplicate {
@@ -485,13 +590,35 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
             });
         }
 
+        let file = match &claim.scope {
+            Scope::Revision => FileCheck::Whole,
+            Scope::File { .. } if !present => FileCheck::Unknown,
+            Scope::File { file, .. } => {
+                let tree = trees
+                    .entry(claim.revision)
+                    .or_insert_with(|| store.tree(&claim.revision).ok());
+                let check = in_tree(tree.as_ref(), file);
+                if check == FileCheck::Missing {
+                    report.findings.push(Finding::NoSuchFile {
+                        path: path.clone(),
+                        revision: claim.revision,
+                        file: *file,
+                    });
+                }
+                check
+            }
+        };
+
         let held = Held {
             path,
             claim,
             verified,
             who,
+            file,
         };
-        if held.counts() && present {
+        // Ancestry is a whole-revision claim's alone; see the module's notes
+        // on a claim over one file.
+        if held.counts() && present && held.claim.scope == Scope::Revision {
             // Ancestry, not the revision alone: a digest pins its bytes, which
             // pin its parents' digests, so vouching for a revision vouches for
             // everything behind it.
@@ -522,6 +649,32 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
     }
 
     Ok(report)
+}
+
+/// What the tree of `revision` says about `file`: the check
+/// [`verify`] makes of every claim over one file, for a caller about to write
+/// one.
+pub fn find_file<F: Filesystem>(
+    store: &Store<F>,
+    revision: &RevisionId,
+    file: &FileId,
+) -> FileCheck {
+    if !store.holds(revision) {
+        return FileCheck::Unknown;
+    }
+    in_tree(store.tree(revision).ok().as_ref(), file)
+}
+
+fn in_tree(tree: Option<&historica::tree::Tree>, file: &FileId) -> FileCheck {
+    match tree {
+        None => FileCheck::Unknown,
+        Some(tree) => match tree.path(file) {
+            Some(path) => FileCheck::Found {
+                path: path.to_owned(),
+            },
+            None => FileCheck::Missing,
+        },
+    }
 }
 
 /// The heads a person is standing on: the ones nothing has rewritten.
