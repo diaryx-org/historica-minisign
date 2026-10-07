@@ -37,6 +37,7 @@ use historica::format::{RevisionDocument, Timestamp};
 use historica::naming::stems as revision_stems;
 
 use crate::claim::{Claim, Key};
+use crate::heads::Statement;
 
 /// Characters of a key's digest where a name needs one to tell two apart.
 ///
@@ -160,6 +161,31 @@ pub fn stem_for<'a>(
         return named;
     }
     format!("{named} {}", digest.abbreviate(CLAIM_DIGEST_CHARS))
+}
+
+/// The stem a head statement is filed under, relative to `claims/heads/`.
+///
+/// Decision 0005: a directory per key, spelled as [`key_prefix`] spells it, and
+/// the counter as the name, so a person opening the folder reads one key's
+/// statements in the order it made them. Two statements by one key at one
+/// counter are an equivocation, and the second to be written takes the
+/// statement's digest after the counter — the name a claim's last tier takes,
+/// for the same reason: it is derived from the document, never from what else
+/// is in the directory.
+pub fn statement_stem<'a>(
+    digest: &RevisionId,
+    statement: &Statement,
+    existing: impl IntoIterator<Item = (&'a RevisionId, &'a Statement)>,
+) -> String {
+    let plain = format!("{}/{}", key_prefix(&statement.key), statement.counter);
+    let taken = existing.into_iter().any(|(held, other)| {
+        held != digest && other.key == statement.key && other.counter == statement.counter
+    });
+    if taken {
+        format!("{plain} {}", digest.abbreviate(CLAIM_DIGEST_CHARS))
+    } else {
+        plain
+    }
 }
 
 /// A claim's name before any collision suffix.

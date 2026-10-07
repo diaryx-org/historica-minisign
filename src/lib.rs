@@ -9,7 +9,7 @@
 //! bytes, and a document cannot contain a signature over a digest that depends
 //! on the signature.
 //!
-//! This is that tool. It writes two kinds of file and reads a third:
+//! This is that tool. It writes three kinds of file and keeps two of its own:
 //!
 //! - a **claim** ([`claim`]) in `history/claims/`, one key vouching for one
 //!   revision digest in one role at one moment — or for one file at that
@@ -17,9 +17,14 @@
 //!   the revision it vouches for ([`naming`]) and identified by the SHA-256 of
 //!   its own bytes rather than by what it is called;
 //! - its **signature**, minisign, detached, beside it;
+//! - a **head statement** ([`heads`]) in `history/claims/heads/`, one key
+//!   stating, at a count that only goes up, every head its history had
+//!   (decision 0005), with its signature beside it;
 //! - the **trust policy** ([`trust`]) in `history/trust/`, one key to a file,
 //!   which says whose word this copy accepts and never crosses a store
-//!   boundary.
+//!   boundary, and beside it what this copy has **seen** ([`seen`]): the
+//!   highest statement it has witnessed from each key, which never travels
+//!   either.
 //!
 //! Nothing here writes a Historica document, and Historica knows nothing about
 //! any of it beyond the promise 0046 extracted: a directory at the store root
@@ -50,8 +55,10 @@
 #![deny(missing_docs)]
 
 pub mod claim;
+pub mod heads;
 pub mod layout;
 pub mod naming;
+pub mod seen;
 pub mod trust;
 pub mod verify;
 
@@ -61,5 +68,6 @@ pub mod key;
 pub mod sign;
 
 pub use claim::{Claim, ClaimError, ContentDigest, Key, Role, Scope};
+pub use heads::{Statement, StatementError};
 pub use trust::Trust;
 pub use verify::{FileCheck, Finding, Report, Severity};
