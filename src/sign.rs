@@ -101,6 +101,23 @@ pub fn file_claim_for(
     Ok(claim)
 }
 
+/// The claim a key would make about one document that is not a revision,
+/// now: a forgetting above all, which no revision names. Decision 0006.
+///
+/// Nothing here checks that the store holds the document, because this has
+/// no store to look in; [`crate::verify::verify`] notes a claim over one it
+/// does not hold, as it notes one over an absent revision.
+pub fn document_claim_for(
+    document: RevisionId,
+    role: Role,
+    secret: &SecretKey,
+    clock: &dyn Clock,
+) -> Result<Claim, SignError> {
+    let mut claim = claim_for(document, role, secret, clock)?;
+    claim.scope = Scope::Document;
+    Ok(claim)
+}
+
 /// The public key a secret key belongs to, spelled as a claim spells it.
 pub fn public_key(secret: &SecretKey) -> Result<Key, SignError> {
     let public = PublicKey::from_secret_key(secret).map_err(SignError::minisign)?;

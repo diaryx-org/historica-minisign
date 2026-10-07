@@ -434,7 +434,8 @@ impl Held {
 /// What a revision's tree says about the file a claim names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileCheck {
-    /// The claim is over a whole revision, and names no file.
+    /// The claim is over a whole revision, or over one document that is
+    /// not a revision (decision 0006), and names no file.
     Whole,
     /// The revision holds the file, at this path.
     Found {
@@ -752,7 +753,12 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
             });
         }
 
-        let present = store.holds(&claim.revision);
+        // A `claim-2` is over a document of the store and not a revision
+        // (decision 0006): present when the store holds that document.
+        let present = match claim.scope {
+            Scope::Document => store.body(&claim.revision).ok().flatten().is_some(),
+            _ => store.holds(&claim.revision),
+        };
         if !present {
             report.findings.push(Finding::Absent {
                 path: path.clone(),
@@ -761,7 +767,7 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
         }
 
         let file = match &claim.scope {
-            Scope::Revision => FileCheck::Whole,
+            Scope::Revision | Scope::Document => FileCheck::Whole,
             Scope::File { .. } if !present => FileCheck::Unknown,
             Scope::File { file, .. } => {
                 let tree = trees

@@ -59,12 +59,19 @@ pub const PREAMBLE: &str = "claim-0";
 /// The preamble a claim over one file begins with. Decision 0004.
 pub const FILE_PREAMBLE: &str = "claim-1";
 
+/// The preamble a claim over one document that is not a revision begins
+/// with: an operation document, a resolution, or a forgetting. Decision 0006.
+pub const DOCUMENT_PREAMBLE: &str = "claim-2";
+
 /// The headers of a `claim-0`, in the one order it may state them.
 const HEADERS: [&str; 4] = ["revision", "role", "key", "when"];
 
 /// The headers of a `claim-1`, in the one order it may state them: what is
 /// vouched for first, then in what capacity, by whom, and when.
 const FILE_HEADERS: [&str; 6] = ["revision", "file", "content", "role", "key", "when"];
+
+/// The headers of a `claim-2`, in the one order it may state them.
+const DOCUMENT_HEADERS: [&str; 4] = ["document", "role", "key", "when"];
 
 /// One key vouching for one revision, or for one file at it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +80,10 @@ pub struct Claim {
     ///
     /// A digest and never a change ID: a claim over a change would follow
     /// amendment, which is exactly the property a signature must not have.
+    ///
+    /// For a claim over one document ([`Scope::Document`]), the document's
+    /// digest, which names no revision: the field keeps its name because a
+    /// digest is what every claim is over, and the preamble says which kind.
     pub revision: RevisionId,
     /// Whether the claim covers the whole revision or one file at it, and
     /// which preamble it is therefore written under.
@@ -110,6 +121,14 @@ pub enum Scope {
         /// comparing it with the file's content digest *now*.
         content: ContentDigest,
     },
+    /// One document of the store that is not a revision, by its digest.
+    /// Written as `claim-2`. Decision 0006.
+    ///
+    /// Covers that document's bytes and nothing else: no revision, and
+    /// nothing any revision descends from. Its use is a document that
+    /// travels without a revision naming it, a forgetting above all, whose
+    /// author no revision can say.
+    Document,
 }
 
 impl Claim {
@@ -118,6 +137,7 @@ impl Claim {
         match self.scope {
             Scope::Revision => PREAMBLE,
             Scope::File { .. } => FILE_PREAMBLE,
+            Scope::Document => DOCUMENT_PREAMBLE,
         }
     }
 
@@ -125,7 +145,7 @@ impl Claim {
     /// claim over a whole revision.
     pub fn file(&self) -> Option<(&FileId, &ContentDigest)> {
         match &self.scope {
-            Scope::Revision => None,
+            Scope::Revision | Scope::Document => None,
             Scope::File { file, content } => Some((file, content)),
         }
     }
@@ -144,6 +164,10 @@ impl Claim {
             ),
             Scope::File { file, content } => format!(
                 "{FILE_PREAMBLE}\nrevision {}\nfile {file}\ncontent {content}\nrole {}\nkey {}\nwhen {}\n",
+                self.revision, self.role, self.key, self.when
+            ),
+            Scope::Document => format!(
+                "{DOCUMENT_PREAMBLE}\ndocument {}\nrole {}\nkey {}\nwhen {}\n",
                 self.revision, self.role, self.key, self.when
             ),
         }
@@ -166,6 +190,7 @@ impl Claim {
         let headers: &[&'static str] = match lines[0] {
             PREAMBLE => &HEADERS,
             FILE_PREAMBLE => &FILE_HEADERS,
+            DOCUMENT_PREAMBLE => &DOCUMENT_HEADERS,
             found => {
                 return Err(ClaimError::Preamble {
                     found: found.to_owned(),
@@ -224,11 +249,16 @@ impl Claim {
             because,
         };
 
-        let (at, value) = line("revision");
+        // What is vouched for: a revision, or under `claim-2` a document.
+        let named = match lines[0] {
+            DOCUMENT_PREAMBLE => "document",
+            _ => "revision",
+        };
+        let (at, value) = line(named);
         let revision = value.parse::<RevisionId>().map_err(|_| {
             malformed(
                 at,
-                "revision",
+                named,
                 "a digest is 64 hexadecimal characters".to_owned(),
             )
         })?;
@@ -242,6 +272,8 @@ impl Claim {
                 .parse::<ContentDigest>()
                 .map_err(|error| malformed(at, "content", error.to_string()))?;
             Scope::File { file, content }
+        } else if lines[0] == DOCUMENT_PREAMBLE {
+            Scope::Document
         } else {
             Scope::Revision
         };
@@ -564,8 +596,8 @@ impl fmt::Display for ClaimError {
         match self {
             Self::Preamble { found } => write!(
                 f,
-                "line 1 says `{found}`; a claim begins `{PREAMBLE}` or \
-                 `{FILE_PREAMBLE}`, and a reader that met another spelling \
+                "line 1 says `{found}`; a claim begins `{PREAMBLE}`, \
+                 `{FILE_PREAMBLE}` or `{DOCUMENT_PREAMBLE}`, and a reader that met another spelling \
                  would be guessing at what it was leaving out"
             ),
             Self::Missing { header } => {
@@ -706,6 +738,36 @@ when 2026-10-03T09:12:04-06:00
         assert_eq!(file.to_string(), "kmnpqrstvwxzkmnpqrstvwxz");
         assert_eq!(content.algorithm(), "sha256");
         assert_eq!(content.value().len(), 64);
+    }
+
+    const DOCUMENT_EXAMPLE: &str = "\
+claim-2
+document 6397b3a4b3b8abd444da81f2f731dd67c4f5bcea5dc03c4e8141783d1f1b4c53
+role author
+key RWTd8LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
+when 2026-10-07T09:12:04-06:00
+";
+
+    #[test]
+    fn a_claim_over_one_document_renders_the_bytes_it_was_read_from() {
+        let claim = Claim::parse(DOCUMENT_EXAMPLE).expect("the example parses");
+        assert_eq!(claim.scope, Scope::Document);
+        assert_eq!(claim.preamble(), DOCUMENT_PREAMBLE);
+        assert_eq!(claim.file(), None);
+        assert_eq!(claim.render(), DOCUMENT_EXAMPLE);
+    }
+
+    /// A `claim-2` names a document, never a revision: the header that says
+    /// which is the one its preamble asks for.
+    #[test]
+    fn a_claim_2_states_a_document_and_not_a_revision() {
+        let text = DOCUMENT_EXAMPLE.replace("document ", "revision ");
+        assert!(matches!(
+            Claim::parse(&text),
+            Err(ClaimError::Unknown { at: 2, .. }) | Err(ClaimError::OutOfOrder { at: 2, .. })
+        ));
+        let text = EXAMPLE.replace(PREAMBLE, DOCUMENT_PREAMBLE);
+        assert!(Claim::parse(&text).is_err());
     }
 
     /// One claim, one spelling: dropping the file from a `claim-1` is a
@@ -863,7 +925,7 @@ when 2026-10-03T09:12:04-06:00
 
     #[test]
     fn a_preamble_neither_grammar_names_is_refused() {
-        let text = EXAMPLE.replace(PREAMBLE, "claim-2");
+        let text = EXAMPLE.replace(PREAMBLE, "claim-3");
         assert!(matches!(
             Claim::parse(&text),
             Err(ClaimError::Preamble { .. })

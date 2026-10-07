@@ -1126,3 +1126,66 @@ fn a_whole_revision_claim_is_still_written_as_claim_0() {
     assert_eq!(claim.scope, Scope::Revision);
     assert!(!filed(&store, &claim).ends_with(' '));
 }
+
+/// Decision 0006: a `claim-2` vouches for one document that is not a
+/// revision, by its digest, and for nothing behind it.
+#[test]
+fn a_claim_over_one_document_vouches_for_that_document_alone() {
+    let directory = scratch("document");
+    let store = store_of(&directory, 2);
+    let (secret, key) = keys(&directory);
+    believe(&store, &key);
+    let revision = store.get(&head(&store)).expect("read").expect("held");
+    let document = *revision.edited.values().next().expect("an edited file");
+    let author = "author".parse::<Role>().expect("a role");
+    let claim =
+        sign::document_claim_for(document, author.clone(), &secret, &Platform).expect("a claim");
+    assert_eq!(claim.scope, Scope::Document);
+    sign::write(
+        store.filesystem(),
+        store.root(),
+        &claim,
+        &filed(&store, &claim),
+        &secret,
+    )
+    .expect("written");
+
+    let report = verify::verify(&reopen(&store)).expect("a report");
+    assert!(report.ok(), "{:?}", report.findings().collect::<Vec<_>>());
+    let held = &report.held()[0];
+    assert_eq!(held.claim, claim);
+    assert!(held.counts());
+    assert!(
+        !report
+            .notes()
+            .any(|finding| matches!(finding, Finding::Absent { .. })),
+        "the store holds the document"
+    );
+    assert!(
+        report.vouched().is_empty(),
+        "a document is no revision, and vouches for none"
+    );
+
+    // Over a document this store does not hold, it is noted as absent.
+    let elsewhere = sign::document_claim_for(
+        historica::format::digest(b"somewhere else"),
+        author,
+        &secret,
+        &Platform,
+    )
+    .expect("a claim");
+    sign::write(
+        store.filesystem(),
+        store.root(),
+        &elsewhere,
+        &filed(&store, &elsewhere),
+        &secret,
+    )
+    .expect("written");
+    let report = verify::verify(&reopen(&store)).expect("a report");
+    assert!(
+        report
+            .notes()
+            .any(|finding| matches!(finding, Finding::Absent { .. }))
+    );
+}
