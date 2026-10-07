@@ -1,9 +1,10 @@
 //! The command-line front end.
 //!
-//! Four commands, and only two of them write: `sign` writes a claim and its
-//! signature into `history/claims/`, and `trust` writes and deletes files in
-//! `history/trust/`. `verify` reads, and Historica's decision 0046 says so in
-//! as many words. Nothing here writes a Historica document, ever.
+//! `sign` writes a claim and its signature into `history/claims/`, and
+//! `state` a head statement beside them (decision 0005); `trust` writes and
+//! deletes files in `history/trust/`, and `witness` raises this copy's record
+//! of what it has seen there. `verify` reads, and Historica's decision 0046
+//! says so in as many words. Nothing here writes a Historica document, ever.
 
 mod target;
 
@@ -22,7 +23,7 @@ use historica_minisign::layout::{
     CLAIM_SUFFIX, SIGNATURE_SUFFIX, claim_file, claims, signature_file,
 };
 use historica_minisign::verify::{FileCheck, Finding, Severity};
-use historica_minisign::{key, naming, sign, trust, verify};
+use historica_minisign::{key, naming, seen, sign, trust, verify};
 
 /// What `historica-minisign` with no arguments prints.
 pub const USAGE: &str = "\
@@ -43,6 +44,16 @@ usage: historica-minisign [-C <dir>] <command> [<arguments>]
                            <digest> is its content digest as your tool spells
                            it (`sha256:…`), which this tool records and never
                            computes
+  state [--key <path>] [--password-file <path>]
+                           state every head this store has, signed, at a
+                           count one higher than any this key has stated
+                           before. A copy that has witnessed the statement
+                           refuses a store that later holds less than it
+                           names, or an older statement in its place
+  witness                  record, for every key this copy believes, the
+                           latest statement `verify` found, so that a later
+                           store rolled back to before it is refused. Kept in
+                           history/trust/seen/, which never travels
   arrange [--dry-run] [--prune]
                            re-file every claim under the name this tool would
                            choose for it, renaming and never rewriting. Only
@@ -173,6 +184,8 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<u8, Failure> {
     match command.as_str() {
         "sign" => sign_command(&base, &rest),
         "verify" => verify_command(&base, &rest),
+        "state" => state_command(&base, &rest),
+        "witness" => witness_command(&base, &rest),
         "arrange" => arrange_command(&base, &rest),
         "trust" => trust_command(&base, &rest),
         "key" => key_command(&rest),
@@ -436,6 +449,40 @@ fn verify_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
             )?;
         }
 
+        if !report.statements().is_empty() {
+            let believed = report
+                .statements()
+                .iter()
+                .filter(|held| held.counts())
+                .count();
+            writeln!(
+                out,
+                "\n{} head statement{}, {believed} by a key this copy believes",
+                report.statements().len(),
+                if report.statements().len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )?;
+            for (_, held) in report.latest() {
+                let heads = held.statement.heads.len();
+                writeln!(
+                    out,
+                    "  {} at count {}, {heads} head{}{}",
+                    held.who
+                        .as_deref()
+                        .unwrap_or("a key this copy does not hold"),
+                    held.statement.counter,
+                    if heads == 1 { "" } else { "s" },
+                    match report.seen().get(&held.statement.key) {
+                        Some(seen) => format!(", seen here at {}", seen.counter),
+                        None => String::new(),
+                    }
+                )?;
+            }
+        }
+
         if let Some(revision) = asked {
             writeln!(
                 out,
@@ -480,6 +527,107 @@ fn verify_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
         report.ok() && !asked_and_unvouched
     };
     Ok(if ok { 0 } else { 1 })
+}
+
+// ---------------------------------------------------------------------------
+// state and witness
+// ---------------------------------------------------------------------------
+
+/// Write a head statement over every head this store has. Decision 0005.
+fn state_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
+    let mut key_path: Option<PathBuf> = None;
+    let mut password_file: Option<PathBuf> = None;
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        match argument.as_str() {
+            "--key" => key_path = Some(PathBuf::from(value(&mut rest, "--key")?)),
+            "--password-file" => {
+                password_file = Some(PathBuf::from(value(&mut rest, "--password-file")?));
+            }
+            other => {
+                return Err(Failure::usage(format!(
+                    "`{other}`: state takes no target, because it states every head"
+                )));
+            }
+        }
+    }
+
+    let store = open(base)?;
+    let path = match key_path {
+        Some(path) => path,
+        None => key::default_secret_key().ok_or_else(|| {
+            Failure::error(
+                "this platform will not say where home is, so there is no \
+                 default key; name one with --key",
+            )
+        })?,
+    };
+    let password = password(password_file.as_deref())?;
+    let secret = key::load(&path, password).map_err(Failure::error)?;
+    let key = sign::public_key(&secret).map_err(Failure::error)?;
+
+    let report = verify::verify(&store)?;
+    let counter = match report.highest_counter(&key) {
+        None => 1,
+        Some(highest) => highest.checked_add(1).ok_or_else(|| {
+            Failure::error("this key has stated as many times as a count can hold")
+        })?,
+    };
+    let statement = sign::statement_for(store.history().heads(), counter, &secret, &Platform)
+        .map_err(Failure::error)?;
+    let existing: Vec<(RevisionId, historica_minisign::Statement)> = report
+        .statements()
+        .iter()
+        .map(|held| (held.statement.digest(), held.statement.clone()))
+        .collect();
+    let stem = naming::statement_stem(
+        &statement.digest(),
+        &statement,
+        existing
+            .iter()
+            .map(|(digest, statement)| (digest, statement)),
+    );
+    let written =
+        sign::write_statement(store.filesystem(), store.root(), &statement, &stem, &secret)
+            .map_err(Failure::error)?;
+
+    let heads = statement.heads.len();
+    printing(|out| {
+        writeln!(
+            out,
+            "{} states {heads} head{} at count {counter}",
+            statement.key,
+            if heads == 1 { "" } else { "s" }
+        )?;
+        writeln!(out, "  {}", written.claim.display())?;
+        writeln!(out, "  {}", written.signature.display())
+    })
+}
+
+/// Raise this copy's record of what it has seen. Decision 0005.
+fn witness_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
+    if let Some(argument) = arguments.first() {
+        return Err(Failure::usage(format!(
+            "`{argument}`: witness takes nothing"
+        )));
+    }
+    let store = open(base)?;
+    let report = verify::verify(&store)?;
+    let written = seen::witness(store.filesystem(), store.root(), &report)?;
+    printing(|out| {
+        if written.is_empty() {
+            writeln!(out, "nothing newer to witness")?;
+        }
+        for record in &written {
+            writeln!(
+                out,
+                "this copy has now seen {} at count {}",
+                record.key, record.counter
+            )?;
+        }
+        say(out, &report, Severity::Error, "errors")
+    })?;
+    Ok(if report.ok() { 0 } else { 1 })
 }
 
 fn say(

@@ -11,9 +11,22 @@
 //!     2026-08/
 //!       2026-08-18 drop the private export — author.claim.txt
 //!       2026-08-18 drop the private export — author.claim.txt.minisig
+//!     heads/
+//!       3f9a0c1e/
+//!         7.heads.txt          a head statement: key 3f9a0c1e's seventh
+//!         7.heads.txt.minisig
 //!   trust/
 //!     adam.txt                 one key this copy believes, labelled by hand
+//!     seen/
+//!       3f9a0c1e.txt           the highest statement this copy has witnessed
 //! ```
+//!
+//! Head statements (decision 0005) are filed under `claims/` because that is
+//! the directory historica's decision 0053 makes travel and union, and a
+//! statement has to travel to be worth anything. What this copy has witnessed
+//! of them is filed under `trust/`, because it is this copy's opinion and must
+//! never travel: a store that could send a reader a lower high-water mark
+//! could undo the one thing statements are for.
 //!
 //! Decision 0003 is where a claim goes and what it is called there; [`crate::naming`]
 //! computes it. Nothing in this module decides a name — it spells the suffixes
@@ -43,6 +56,15 @@ pub const CLAIM_SUFFIX: &str = ".claim.txt";
 /// makes checking a claim by hand the command a person already knows.
 pub const SIGNATURE_SUFFIX: &str = ".minisig";
 
+/// Where head statements are filed, under `claims/`. Decision 0005.
+pub const HEADS_DIR: &str = "heads";
+
+/// What a head statement's filename ends with.
+pub const STATEMENT_SUFFIX: &str = ".heads.txt";
+
+/// Where this copy keeps what it has witnessed, under `trust/`. Decision 0005.
+pub const SEEN_DIR: &str = "seen";
+
 /// What a trust entry's filename ends with. The rest of the name is a label
 /// somebody chose; nothing reads it.
 pub const TRUST_SUFFIX: &str = ".txt";
@@ -55,6 +77,32 @@ pub fn claims(root: &Path) -> PathBuf {
 /// The trust directory of the store rooted at `root`.
 pub fn trust(root: &Path) -> PathBuf {
     root.join(TRUST_DIR)
+}
+
+/// Where a head statement filed under `stem` goes: `claims/heads/<stem>`.
+pub fn statement_file(root: &Path, stem: &str) -> PathBuf {
+    let mut path = claims(root).join(HEADS_DIR);
+    let mut components: Vec<&str> = stem.split('/').collect();
+    let name = components.pop().unwrap_or_default();
+    path.extend(components);
+    path.push(format!("{name}{STATEMENT_SUFFIX}"));
+    path
+}
+
+/// Where that statement's signature goes.
+pub fn statement_signature_file(root: &Path, stem: &str) -> PathBuf {
+    let path = statement_file(root, stem);
+    with_signature_suffix(path)
+}
+
+/// The directory this copy's witnessed statements are kept in.
+pub fn seen(root: &Path) -> PathBuf {
+    trust(root).join(SEEN_DIR)
+}
+
+/// Whether this filename is a head statement's, whatever the rest of it says.
+pub fn is_statement_name(name: &str) -> bool {
+    name.ends_with(STATEMENT_SUFFIX)
 }
 
 /// Where a claim filed under `stem` goes.
@@ -72,7 +120,10 @@ pub fn claim_file(root: &Path, stem: &str) -> PathBuf {
 
 /// Where that claim's signature goes.
 pub fn signature_file(root: &Path, stem: &str) -> PathBuf {
-    let mut path = claim_file(root, stem);
+    with_signature_suffix(claim_file(root, stem))
+}
+
+fn with_signature_suffix(mut path: PathBuf) -> PathBuf {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -102,10 +153,10 @@ pub fn digest_of_name(name: &str) -> Option<RevisionId> {
     name.strip_suffix(CLAIM_SUFFIX)?.parse().ok()
 }
 
-/// The claim a signature's filename names, if it names one.
+/// The claim or head statement a signature's filename names, if it names one.
 pub fn signed_name(name: &str) -> Option<&str> {
-    let claim = name.strip_suffix(SIGNATURE_SUFFIX)?;
-    claim.ends_with(CLAIM_SUFFIX).then_some(claim)
+    let signed = name.strip_suffix(SIGNATURE_SUFFIX)?;
+    (signed.ends_with(CLAIM_SUFFIX) || signed.ends_with(STATEMENT_SUFFIX)).then_some(signed)
 }
 
 #[cfg(test)]
@@ -163,6 +214,22 @@ mod tests {
         let path = claim_file(Path::new("history"), &id.to_string());
         let name = path.file_name().unwrap().to_str().unwrap();
         assert_eq!(digest_of_name(name), Some(id));
+    }
+
+    #[test]
+    fn a_statement_is_filed_under_heads_by_key() {
+        let stem = "3f9a0c1e/7";
+        assert_eq!(
+            statement_file(Path::new("history"), stem),
+            Path::new("history/claims/heads/3f9a0c1e/7.heads.txt")
+        );
+        let signature = statement_signature_file(Path::new("history"), stem);
+        assert_eq!(
+            signed_name(signature.file_name().unwrap().to_str().unwrap()),
+            Some("7.heads.txt")
+        );
+        assert!(is_statement_name("7.heads.txt"));
+        assert!(!is_claim_name("7.heads.txt"));
     }
 
     #[test]
