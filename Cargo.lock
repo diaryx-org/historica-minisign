@@ -162,9 +162,9 @@ dependencies = [
 
 [[package]]
 name = "fs-transaction"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c5f24beb16fadfb4a4f47a9b1938bed0ddaed9ecfb4b834b8eeaf39fec85916"
+checksum = "79978e566d6e7793c658ea5beb1e584c742dcc35d8eb8f44e91f8327c4fb83cb"
 dependencies = [
  "libc",
 ]
@@ -194,9 +194,9 @@ dependencies = [
 
 [[package]]
 name = "historica"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d890611e4fd991dd566f5ff1c3f79bff6533fb3c049e206f3977aa253a622ff"
+checksum = "ae4239d01edee0aaf2c2e4af0c0d7213bdf78b9884ef2d9a5623cda25a87950f"
 dependencies = [
  "fs-transaction",
  "getrandom",
