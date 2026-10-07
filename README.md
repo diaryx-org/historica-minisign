@@ -62,6 +62,13 @@ digest. This one records it and never computes it.
 [Decision 0004](docs/decisions/0004-a-claim-can-be-over-one-file.md) has the
 grammar and the argument.
 
+A claim can also be over one document that is not a revision, such as a
+forgetting, which no revision names and so nobody could otherwise sign. It is
+written as `claim-2`, names the document's digest, and vouches for no
+revision.
+[Decision 0006](docs/decisions/0006-a-claim-can-be-over-one-document.md) has
+the grammar and the argument.
+
 **Head statements** answer the subset a set of claims cannot. A key states,
 at a count that only goes up, every head its history had:
 
@@ -104,7 +111,8 @@ when 2026-08-24T09:12:04-06:00
 ```
 
 A claim over one file is a `claim-1`: seven lines, with `file` and `content`
-after `revision`. Either kind has an ordinary detached minisign signature
+after `revision`. A claim over one document is a `claim-2`, with
+`document` in place of `revision`. Either kind has an ordinary detached minisign signature
 beside it. Anything this tool can write, `minisign -Sm` can write;
 anything `minisign -Vm` accepts, this accepts. Tests pin both directions
 against the real command.
