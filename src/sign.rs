@@ -29,7 +29,8 @@ use minisign::PublicKey;
 pub use minisign::SecretKey;
 
 use crate::claim::{Claim, ContentDigest, Key, Role, Scope};
-use crate::layout::{claim_file, signature_file};
+use crate::heads::Statement;
+use crate::layout::{claim_file, signature_file, statement_file, statement_signature_file};
 
 /// What minisign puts in an untrusted comment, and therefore what this puts
 /// there.
@@ -125,18 +126,87 @@ pub fn write<F: Filesystem + ?Sized>(
         });
     }
 
-    let bytes = claim.render().into_bytes();
+    write_signed(
+        files,
+        root,
+        claim.render().into_bytes(),
+        claim_file(root, stem),
+        signature_file(root, stem),
+        secret,
+    )
+}
+
+/// The head statement a key would make about a store whose heads are
+/// `heads`, now, at `counter`. Decision 0005.
+///
+/// `counter` is the caller's to choose, because only the caller has read
+/// what this key has already stated: one more than
+/// [`crate::verify::Report::highest_counter`] is the answer, and a lower one
+/// is a statement every copy that saw the higher will refuse.
+pub fn statement_for(
+    heads: std::collections::BTreeSet<RevisionId>,
+    counter: u64,
+    secret: &SecretKey,
+    clock: &dyn Clock,
+) -> Result<Statement, SignError> {
+    if heads.is_empty() {
+        return Err(SignError::NoHeads);
+    }
+    Ok(Statement {
+        key: public_key(secret)?,
+        counter,
+        when: clock.now().map_err(|error| SignError::Clock {
+            because: error.to_string(),
+        })?,
+        heads,
+    })
+}
+
+/// Write a head statement into the store at `stem`, under `claims/heads/`,
+/// with its signature beside it.
+///
+/// `stem` is [`crate::naming::statement_stem`]'s answer, for the reason
+/// [`write`] gives.
+pub fn write_statement<F: Filesystem + ?Sized>(
+    files: &F,
+    root: &Path,
+    statement: &Statement,
+    stem: &str,
+    secret: &SecretKey,
+) -> Result<Signed, SignError> {
+    if statement.key != public_key(secret)? {
+        return Err(SignError::WrongKey {
+            claim: statement.key.clone(),
+        });
+    }
+    write_signed(
+        files,
+        root,
+        statement.render().into_bytes(),
+        statement_file(root, stem),
+        statement_signature_file(root, stem),
+        secret,
+    )
+}
+
+/// Write some bytes and their signature beside them, each with `create_new`.
+fn write_signed<F: Filesystem + ?Sized>(
+    files: &F,
+    root: &Path,
+    bytes: Vec<u8>,
+    claim_path: PathBuf,
+    signature_path: PathBuf,
+    secret: &SecretKey,
+) -> Result<Signed, SignError> {
     let digest = historica::format::digest(&bytes);
-    let claim_path = claim_file(root, stem);
-    let signature_path = signature_file(root, stem);
     let name = claim_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default()
         .to_owned();
 
-    // The month directory decision 0041 files a revision in, which the stem
-    // carries and this is the first thing to need on disk.
+    // The directory the stem names, which is the first thing to need on
+    // disk: decision 0041's month for a claim, the key's for a statement.
     let directory = claim_path.parent().unwrap_or(root).to_path_buf();
     files
         .create_directory(&directory)
@@ -199,6 +269,9 @@ pub enum SignError {
         /// What the claim names.
         claim: Key,
     },
+    /// A head statement over a store that has no heads, which would state
+    /// nothing.
+    NoHeads,
     /// The clock could not answer.
     Clock {
         /// What it said.
@@ -241,6 +314,9 @@ impl fmt::Display for SignError {
                 "the claim names {claim}, which is not the key signing it; a \
                  claim states whose word it is, so the two cannot differ"
             ),
+            Self::NoHeads => {
+                f.write_str("this store holds no revisions, so there are no heads to state")
+            }
             Self::Clock { because } => write!(f, "the clock could not say when now is: {because}"),
             Self::Minisign { because } => write!(f, "minisign: {because}"),
             Self::Io { path, error } => write!(f, "{}: {error}", path.display()),

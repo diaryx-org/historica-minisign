@@ -59,8 +59,25 @@
 //! A signature never stops being valid, so a store can present a subset of a
 //! history — every document intact, every claim verifying — and the subset lies
 //! by omission. 0046's answer to the half of that which is answerable offline
-//! is head statements, which are specified there and not built here. Nothing in
-//! this module detects a withheld revision, and it does not pretend to.
+//! is head statements, which decision 0005 builds.
+//!
+//! # Head statements
+//!
+//! A statement says *at count N, this key's history had these heads*. For
+//! every key this copy believes, `verify` takes the highest-counted statement
+//! that verifies and asks two things of it. Does this store hold every head
+//! it names — or a revision that supersedes it, since `prune` may since have
+//! taken an amended head away? If not, the store is a subset of what the key
+//! has already shown somebody: [`Finding::Withheld`]. And is it at least as
+//! high as the highest statement this copy has witnessed from that key
+//! ([`crate::seen`])? If not, the store has been rolled back to before what
+//! this copy already saw: [`Finding::RolledBack`]. Two different statements by
+//! one key at one count are [`Finding::Equivocated`], whether both are in the
+//! store or one is and the other is what this copy witnessed.
+//!
+//! What no statement can detect is a withheld *newer* statement — freshness
+//! rather than rollback. 0046 declines expiring statements for a store that
+//! may sit in a folder for a year, and so does this.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -74,10 +91,13 @@ use historica::store::{Store, platform_name};
 use minisign_verify::Signature;
 
 use crate::claim::{Claim, ClaimError, ContentDigest, Key, Scope};
+use crate::heads::{Statement, StatementError};
 use crate::layout::{
-    CLAIM_SUFFIX, claims as claims_dir, digest_of_name, is_claim_name, signed_name,
+    CLAIM_SUFFIX, claims as claims_dir, digest_of_name, is_claim_name, is_statement_name,
+    signed_name,
 };
 use crate::naming;
+use crate::seen::Seen;
 use crate::trust::Trust;
 
 /// Whether a finding means the store is wrong, or only that something is worth
@@ -187,6 +207,47 @@ pub enum Finding {
         /// The file.
         path: PathBuf,
     },
+    /// A head statement whose bytes do not parse. Decision 0005.
+    MalformedStatement {
+        /// The file.
+        path: PathBuf,
+        /// What is wrong with it.
+        because: StatementError,
+    },
+    /// A file in `trust/seen/` that is not a record.
+    MalformedSeen {
+        /// The file.
+        path: PathBuf,
+        /// What is wrong with it.
+        because: String,
+    },
+    /// A key this copy believes stated two different things at one count.
+    Equivocated {
+        /// The key.
+        key: Key,
+        /// The count it stated twice.
+        counter: u64,
+    },
+    /// The latest statement of a key this copy believes names a head this
+    /// store does not hold, and nothing here supersedes.
+    Withheld {
+        /// The statement.
+        path: PathBuf,
+        /// Whose it is.
+        key: Key,
+        /// The head this store lacks.
+        revision: RevisionId,
+    },
+    /// This copy has witnessed a statement from a key higher than any the
+    /// store now holds.
+    RolledBack {
+        /// The key.
+        key: Key,
+        /// The count this copy witnessed.
+        seen: u64,
+        /// The highest this store holds, if it holds any.
+        found: Option<u64>,
+    },
 }
 
 impl Finding {
@@ -205,7 +266,12 @@ impl Finding {
             | Self::Orphaned { .. }
             | Self::Refused { .. }
             | Self::NoSuchFile { .. }
-            | Self::MalformedTrust { .. } => Severity::Error,
+            | Self::MalformedTrust { .. }
+            | Self::MalformedStatement { .. }
+            | Self::MalformedSeen { .. }
+            | Self::Equivocated { .. }
+            | Self::Withheld { .. }
+            | Self::RolledBack { .. } => Severity::Error,
             Self::Untrusted { .. }
             | Self::Absent { .. }
             | Self::Unvouched { .. }
@@ -293,6 +359,44 @@ impl fmt::Display for Finding {
                 "{} is in claims/ and is neither a claim nor a signature",
                 path.display()
             ),
+            Self::MalformedStatement { path, because } => {
+                write!(f, "{} is not a head statement: {because}", path.display())
+            }
+            Self::MalformedSeen { path, because } => {
+                write!(
+                    f,
+                    "{} is not a record of what was seen: {because}",
+                    path.display()
+                )
+            }
+            Self::Equivocated { key, counter } => write!(
+                f,
+                "{key} stated two different sets of heads at count {counter}; one \
+                 key cannot honestly have done that"
+            ),
+            Self::Withheld {
+                path,
+                key,
+                revision,
+            } => write!(
+                f,
+                "{} says {key} had the head {revision}, which this store does not \
+                 hold; it is a subset of a history that key has already shown",
+                path.display()
+            ),
+            Self::RolledBack { key, seen, found } => match found {
+                Some(found) => write!(
+                    f,
+                    "this copy has seen {key} at count {seen}, and the store's \
+                     latest statement from it is {found}: the store has been \
+                     rolled back"
+                ),
+                None => write!(
+                    f,
+                    "this copy has seen {key} at count {seen}, and the store holds \
+                     no statement from it: the store has been rolled back"
+                ),
+            },
         }
     }
 }
@@ -346,11 +450,34 @@ pub enum FileCheck {
     Unknown,
 }
 
+/// One head statement the store holds, and what became of it. Decision 0005.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldStatement {
+    /// Where it is.
+    pub path: PathBuf,
+    /// What it says.
+    pub statement: Statement,
+    /// Whether its signature verified under the key it names.
+    pub verified: bool,
+    /// Who the policy takes that key to speak for, if it holds it.
+    pub who: Option<String>,
+}
+
+impl HeldStatement {
+    /// Whether this statement counts: signed, by a key this copy believes.
+    pub fn counts(&self) -> bool {
+        self.verified && self.who.is_some()
+    }
+}
+
 /// What `verify` found.
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     findings: Vec<Finding>,
     held: Vec<Held>,
+    statements: Vec<HeldStatement>,
+    latest: BTreeMap<Key, usize>,
+    seen: Seen,
     vouched: BTreeSet<RevisionId>,
     revisions: usize,
 }
@@ -387,6 +514,37 @@ impl Report {
     /// Every claim read, in the order the directory gave them up.
     pub fn held(&self) -> &[Held] {
         &self.held
+    }
+
+    /// Every head statement read, in the order the directory gave them up.
+    pub fn statements(&self) -> &[HeldStatement] {
+        &self.statements
+    }
+
+    /// For each key this copy believes, its highest-counted statement that
+    /// counts.
+    pub fn latest(&self) -> impl Iterator<Item = (&Key, &HeldStatement)> {
+        self.latest
+            .iter()
+            .map(|(key, index)| (key, &self.statements[*index]))
+    }
+
+    /// What this copy had witnessed when the report was made.
+    pub fn seen(&self) -> &Seen {
+        &self.seen
+    }
+
+    /// The highest count among the statements that verify by `key`, and among
+    /// what this copy has witnessed from it: what a new statement by that
+    /// key must exceed.
+    pub fn highest_counter(&self, key: &Key) -> Option<u64> {
+        let stored = self
+            .statements
+            .iter()
+            .filter(|held| held.verified && &held.statement.key == key)
+            .map(|held| held.statement.counter);
+        let seen = self.seen.get(key).map(|record| record.counter);
+        stored.chain(seen).max()
     }
 
     /// Every revision a trusted key vouches for, ancestry included.
@@ -468,11 +626,23 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
         });
     }
 
-    let (found, signatures, foreign) = look(files, &claims_dir(root))?;
+    report.seen = Seen::read(files, root)?;
+    for (path, because) in report.seen.malformed() {
+        report.findings.push(Finding::MalformedSeen {
+            path: path.to_path_buf(),
+            because: because.to_owned(),
+        });
+    }
+
+    let (found, signatures, foreign, statements) = look(files, &claims_dir(root))?;
     report
         .findings
         .extend(foreign.into_iter().map(|path| Finding::Foreign { path }));
-    let names: BTreeSet<String> = found.iter().map(|(name, _)| name.clone()).collect();
+    let names: BTreeSet<String> = found
+        .iter()
+        .chain(statements.iter())
+        .map(|(name, _)| name.clone())
+        .collect();
 
     // Pass one: the bytes, and what they are. Decision 0003: a claim is
     // identified by parsing it, so nothing here consults a filename except to
@@ -636,11 +806,16 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
         report.held.push(held);
     }
 
-    for (name, path) in signatures {
-        if !names.contains(&name) {
-            report.findings.push(Finding::Orphaned { path });
+    for (name, path) in &signatures {
+        if !names.contains(name) {
+            report
+                .findings
+                .push(Finding::Orphaned { path: path.clone() });
         }
     }
+
+    read_statements(files, statements, &signatures, &policy, &mut report)?;
+    judge_statements(store, &policy, &mut report);
 
     for head in current_heads(store) {
         if !report.vouched.contains(&head) {
@@ -649,6 +824,161 @@ pub fn verify<F: Filesystem>(store: &Store<F>) -> io::Result<Report> {
     }
 
     Ok(report)
+}
+
+/// Read every head statement, checking each one's signature, and keep what
+/// was read in the report.
+fn read_statements<F: Filesystem + ?Sized>(
+    files: &F,
+    found: Vec<(String, PathBuf)>,
+    signatures: &BTreeMap<String, PathBuf>,
+    policy: &Trust,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut seen: BTreeMap<RevisionId, PathBuf> = BTreeMap::new();
+    for (name, path) in found {
+        let bytes = files.read(&path)?;
+        let parsed = match String::from_utf8(bytes.clone()) {
+            Ok(text) => Statement::parse(&text),
+            Err(_) => Err(StatementError::Preamble {
+                found: "bytes that are not text".to_owned(),
+            }),
+        };
+        let statement = match parsed {
+            Ok(statement) => statement,
+            Err(because) => {
+                report
+                    .findings
+                    .push(Finding::MalformedStatement { path, because });
+                continue;
+            }
+        };
+        let id = digest(&bytes);
+        if let Some(first) = seen.get(&id) {
+            report.findings.push(Finding::Duplicate {
+                path,
+                of: first.clone(),
+            });
+            continue;
+        }
+        seen.insert(id, path.clone());
+
+        let verified = match signatures.get(name.as_str()) {
+            None => {
+                report
+                    .findings
+                    .push(Finding::Unsigned { path: path.clone() });
+                false
+            }
+            Some(signature) => match check(files, signature, &bytes, &statement.key) {
+                Ok(()) => true,
+                Err(because) => {
+                    report.findings.push(Finding::Refused {
+                        path: path.clone(),
+                        key: statement.key.clone(),
+                        because,
+                    });
+                    false
+                }
+            },
+        };
+        let who = policy.who(&statement.key).map(str::to_owned);
+        if who.is_none() {
+            report.findings.push(Finding::Untrusted {
+                path: path.clone(),
+                key: statement.key.clone(),
+            });
+        }
+        report.statements.push(HeldStatement {
+            path,
+            statement,
+            verified,
+            who,
+        });
+    }
+    Ok(())
+}
+
+/// Decision 0005's three questions, for every key this copy believes.
+///
+/// Only statements that count are judged. A key nobody here believes can sign
+/// whatever it likes, and a store anyone can write a claim into must not be
+/// one anyone can fail by doing so.
+fn judge_statements<F: Filesystem>(store: &Store<F>, policy: &Trust, report: &mut Report) {
+    let mut by_key: BTreeMap<Key, BTreeMap<u64, Vec<usize>>> = BTreeMap::new();
+    for (index, held) in report.statements.iter().enumerate() {
+        if held.counts() {
+            by_key
+                .entry(held.statement.key.clone())
+                .or_default()
+                .entry(held.statement.counter)
+                .or_default()
+                .push(index);
+        }
+    }
+
+    // A head `prune` may have taken away legitimately: one some held revision
+    // supersedes. Decision 0023's amendment leaves the old revision behind as
+    // a head by parent edges, and prune is what removes it.
+    let superseded = store.history().superseded();
+    let mut findings = Vec::new();
+    for (key, counters) in &by_key {
+        for (counter, indices) in counters {
+            if indices.len() > 1 {
+                findings.push(Finding::Equivocated {
+                    key: key.clone(),
+                    counter: *counter,
+                });
+            }
+        }
+        let Some((_, indices)) = counters.iter().next_back() else {
+            continue;
+        };
+        report.latest.insert(key.clone(), indices[0]);
+        for index in indices {
+            let held = &report.statements[*index];
+            for head in &held.statement.heads {
+                if !store.holds(head) && !superseded.contains(head) {
+                    findings.push(Finding::Withheld {
+                        path: held.path.clone(),
+                        key: key.clone(),
+                        revision: *head,
+                    });
+                }
+            }
+        }
+    }
+
+    for record in report.seen.records() {
+        // A key this copy has stopped believing is not judged: removing it
+        // from trust/ is how a person says its statements no longer matter.
+        if !policy.holds(&record.key) {
+            continue;
+        }
+        let highest = by_key
+            .get(&record.key)
+            .and_then(|counters| counters.iter().next_back());
+        match highest {
+            Some((counter, indices)) if *counter == record.counter => {
+                let matches = indices
+                    .iter()
+                    .any(|index| report.statements[*index].statement.digest() == record.statement);
+                if !matches {
+                    findings.push(Finding::Equivocated {
+                        key: record.key.clone(),
+                        counter: *counter,
+                    });
+                }
+            }
+            Some((counter, _)) if *counter > record.counter => {}
+            found => findings.push(Finding::RolledBack {
+                key: record.key.clone(),
+                seen: record.counter,
+                found: found.map(|(counter, _)| *counter),
+            }),
+        }
+    }
+    report.findings.extend(findings);
 }
 
 /// What the tree of `revision` says about `file`: the check
@@ -705,12 +1035,14 @@ type Looked = (
     Vec<(String, PathBuf)>,
     BTreeMap<String, PathBuf>,
     Vec<PathBuf>,
+    Vec<(String, PathBuf)>,
 );
 
 fn look<F: Filesystem + ?Sized>(files: &F, directory: &Path) -> io::Result<Looked> {
     let mut looked: Looked = Default::default();
     walk(files, directory, "", &mut looked)?;
     looked.0.sort();
+    looked.3.sort();
     Ok(looked)
 }
 
@@ -758,6 +1090,8 @@ fn walk<F: Filesystem + ?Sized>(
                     looked.1.insert(signed.to_owned(), entry.path);
                 } else if is_claim_name(&relative) {
                     looked.0.push((relative, entry.path));
+                } else if is_statement_name(&relative) {
+                    looked.3.push((relative, entry.path));
                 } else {
                     looked.2.push(entry.path);
                 }

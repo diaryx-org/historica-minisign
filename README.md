@@ -62,10 +62,26 @@ digest. This one records it and never computes it.
 [Decision 0004](docs/decisions/0004-a-claim-can-be-over-one-file.md) has the
 grammar and the argument.
 
-**Head statements are not built.** 0046 specifies a second document kind — a
-key, a counter, and the heads its history had at that moment — which is what
-detects a store presenting a subset of a history it has already shown you.
-Nothing here detects a withheld revision, and it does not pretend to.
+**Head statements** answer the subset a set of claims cannot. A key states,
+at a count that only goes up, every head its history had:
+
+```console
+$ historica-minisign state
+RWQq6vJ… states 1 head at count 3
+  history/claims/heads/8c1e4a2f/3.heads.txt
+  history/claims/heads/8c1e4a2f/3.heads.txt.minisig
+
+$ historica-minisign witness
+this copy has now seen RWQq6vJ… at count 3
+```
+
+From then on `verify` refuses a store that holds less than a believed key's
+latest statement names, one where that key stated two things at one count,
+and one rolled back below what this copy has witnessed. What a copy has
+witnessed is kept in `history/trust/seen/` and never travels.
+[Decision 0005](docs/decisions/0005-a-key-states-its-heads.md) has the grammar
+and the argument. A newer statement that was never shown cannot be detected,
+and nothing here pretends otherwise.
 
 ## Checking a claim without this tool
 
