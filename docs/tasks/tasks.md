@@ -2,9 +2,8 @@
 title: Tasks
 description: Deferred work in historica-minisign — one file each, every one with a done state
 created: 2026-09-02
-updated: 2026-09-02
-contents:
-  - "[Signing a digest it was told about](signing-a-digest-it-was-told-about.md)"
+updated: 2026-10-21
+contents: []
 ---
 
 # Tasks

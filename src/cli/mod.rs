@@ -11,13 +11,14 @@ mod fetch;
 mod target;
 
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use historica::format::Timestamp;
 use historica::fs::Filesystem;
 use historica::record::{Clock, Platform};
 use historica::store::{Store, StoreError};
+use historica::wrote::{self, Line};
 
 use historica::core::{FileId, RevisionId};
 
@@ -52,6 +53,15 @@ usage: historica-minisign [-C <dir>] <command> [<arguments>]
                            <digest> is its content digest as your tool spells
                            it (`sha256:…`), which this tool records and never
                            computes
+  sign --wrote <path> [--role <role>] [--key <path>] [--password-file <path>]
+                           vouch for every revision a historica command said
+                           it wrote: <path>, or `-` for stdin, holds what
+                           that command printed with --fields, so
+                             historica record --fields -m x \
+                               | historica-minisign sign --wrote -
+                           signs what `record` just wrote. A statement that
+                           wrote nothing signs nothing and succeeds; one this
+                           build cannot read signs nothing and fails
   state [--key <path>] [--password-file <path>]
                            state every head this store has, signed, at a
                            count one higher than any this key has stated
@@ -260,11 +270,13 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
     let mut password_file: Option<PathBuf> = None;
     let mut file: Option<String> = None;
     let mut content: Option<String> = None;
+    let mut wrote: Option<PathBuf> = None;
 
     let mut rest = arguments.iter();
     while let Some(argument) = rest.next() {
         match argument.as_str() {
             "--role" => role = value(&mut rest, "--role")?,
+            "--wrote" => wrote = Some(PathBuf::from(value(&mut rest, "--wrote")?)),
             "--file" => file = Some(value(&mut rest, "--file")?),
             "--content" => content = Some(value(&mut rest, "--content")?),
             "--key" => key_path = Some(PathBuf::from(value(&mut rest, "--key")?)),
@@ -311,6 +323,18 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
         }
     };
 
+    if let Some(wrote) = wrote {
+        return sign_wrote(
+            base,
+            &wrote,
+            spelling.as_deref(),
+            one_file.is_some(),
+            role,
+            key_path,
+            password_file,
+        );
+    }
+
     let store = open(base)?;
     let revision = match spelling.as_deref() {
         Some(spelling) => target::resolve(&store, spelling)?,
@@ -320,15 +344,180 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
     };
 
     let secret = secret_key(key_path, password_file.as_deref())?;
+    let filed = file_claim(&store, revision, one_file, role, &secret)?;
+    printing(|out| {
+        filed.print(out)?;
+        filed.who(out)
+    })
+}
 
+/// `sign --wrote`: every `revision` line of a `historica-wrote-1` statement,
+/// signed as `sign <digest>` would sign it, read with historica's own parser
+/// (its decision 0074) rather than a second one.
+///
+/// The statement is the target, so nothing else may name one, and the head
+/// fallback does not apply. All of it is checked before anything is signed:
+/// one this build cannot read is discarded whole, per 0074, and one naming a
+/// revision this store does not hold signs none of the ones it does.
+fn sign_wrote(
+    base: &Path,
+    wrote: &Path,
+    spelling: Option<&str>,
+    one_file: bool,
+    role: Role,
+    key_path: Option<PathBuf>,
+    password_file: Option<PathBuf>,
+) -> Result<u8, Failure> {
+    let stdin = Path::new("-");
+    if let Some(spelling) = spelling {
+        return Err(Failure::usage(format!(
+            "`{spelling}`: --wrote is the target, so sign takes no other"
+        )));
+    }
+    if one_file {
+        return Err(Failure::usage(
+            "--wrote vouches for whole revisions; a claim over one file names \
+             its revision as a target",
+        ));
+    }
+    if wrote == stdin && password_file.as_deref() == Some(stdin) {
+        return Err(Failure::usage(
+            "--wrote - and --password-file - both want stdin; put the \
+             password in a file",
+        ));
+    }
+
+    let (text, source) = if wrote == stdin {
+        let mut text = String::new();
+        io::stdin().read_to_string(&mut text)?;
+        (text, "stdin".to_owned())
+    } else {
+        let text = std::fs::read_to_string(wrote)
+            .map_err(|error| Failure::error(format!("{}: {error}", wrote.display())))?;
+        (text, wrote.display().to_string())
+    };
+    let statement: wrote::Statement = text.parse().map_err(|error| {
+        Failure::error(format!(
+            "{source} is not a statement this build can read, so nothing was \
+             signed: {error}"
+        ))
+    })?;
+    let revisions: Vec<RevisionId> = statement
+        .lines()
+        .filter_map(|line| match line {
+            Line::Revision(id) => Some(*id),
+            Line::Name(_) | Line::Unname(_) | Line::Gone(_) => None,
+        })
+        .collect();
+    if revisions.is_empty() {
+        // Before the store or the key: a wrapper that pipes every command
+        // here should cost nothing, and ask nothing, when one wrote nothing.
+        return printing(|out| {
+            writeln!(
+                out,
+                "{source} names no revision written, so there is nothing to vouch for"
+            )
+        });
+    }
+
+    let store = open(base)?;
+    if let Some(missing) = revisions.iter().find(|id| !store.holds(id)) {
+        return Err(Failure::error(format!(
+            "{source} names {}, which this store does not hold, so nothing was \
+             signed",
+            missing.abbreviate(12)
+        )));
+    }
+
+    let secret = secret_key(key_path, password_file.as_deref())?;
+    let mut filed = Vec::with_capacity(revisions.len());
+    for revision in revisions {
+        // One at a time, each seeing the ones before it filed: the name a
+        // claim takes depends on what is already there.
+        filed.push(file_claim(&store, revision, None, role.clone(), &secret)?);
+    }
+    printing(|out| {
+        for (index, filed) in filed.iter().enumerate() {
+            if index > 0 {
+                writeln!(out)?;
+            }
+            filed.print(out)?;
+        }
+        // One key signed them all, so one line says who it is.
+        match filed.iter().find(|filed| !filed.held) {
+            Some(filed) => filed.who(out),
+            None => Ok(()),
+        }
+    })
+}
+
+/// A claim this command vouched with, and where it is filed.
+struct Filed {
+    claim: Claim,
+    subject: String,
+    /// The claim and signature files, or the one file already holding it.
+    paths: Vec<PathBuf>,
+    /// Whether the store already held this claim, unchanged.
+    already: bool,
+    /// Whether it held it before this command looked, under whatever name,
+    /// so that nothing was written and there is no key to introduce.
+    held: bool,
+    known: Option<String>,
+}
+
+impl Filed {
+    fn print(&self, out: &mut dyn Write) -> io::Result<()> {
+        let claim = &self.claim;
+        writeln!(
+            out,
+            "{} vouches for {} as {}",
+            claim.key, self.subject, claim.role
+        )?;
+        for path in &self.paths {
+            writeln!(out, "  {}", path.display())?;
+        }
+        if self.already {
+            writeln!(out, "\nthis store already held that claim, unchanged")?;
+        }
+        Ok(())
+    }
+
+    /// Who this copy takes the signing key to be, or how to say. Nothing,
+    /// for a claim that was already held.
+    fn who(&self, out: &mut dyn Write) -> io::Result<()> {
+        if self.held {
+            return Ok(());
+        }
+        match &self.known {
+            Some(who) => writeln!(out, "\nthis copy takes that key to be {who}"),
+            None => writeln!(
+                out,
+                "\nnothing in trust/ speaks for that key, so `verify` here will \
+                 note the claim rather than count it:\n  historica-minisign \
+                 trust add {} \"Your Name <you@example.com>\"",
+                self.claim.key
+            ),
+        }
+    }
+}
+
+/// Sign one claim over `revision` — or over one file at it — and file it,
+/// unless the store already holds it under any name.
+fn file_claim(
+    store: &Store,
+    revision: RevisionId,
+    one_file: Option<(String, ContentDigest)>,
+    role: Role,
+    secret: &sign::SecretKey,
+) -> Result<Filed, Failure> {
     let (claim, path_in_tree) = match one_file {
         None => (
-            sign::claim_for(revision, role, &secret, &Platform).map_err(Failure::error)?,
+            sign::claim_for(revision, role, secret, &Platform).map_err(Failure::error)?,
             None,
         ),
         Some((spelling, content)) => {
-            let (file, path) = file_at(&store, &revision, &spelling)?;
-            let claim = sign::file_claim_for(revision, file, content, role, &secret, &Platform)
+            let (file, path) = file_at(store, &revision, &spelling)?;
+            let claim = sign::file_claim_for(revision, file, content, role, secret, &Platform)
                 .map_err(Failure::error)?;
             (claim, Some(path))
         }
@@ -340,13 +529,16 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
     // What is already filed decides two things: whether this claim is here
     // under any name at all, and which of decision 0003's collision tiers its
     // own name takes.
-    let report = verify::verify(&store)?;
+    let report = verify::verify(store)?;
     if let Some(held) = report.held().iter().find(|held| held.claim == claim) {
         let path = held.path.clone();
-        return printing(|out| {
-            writeln!(out, "{} vouches for {subject} as {}", claim.key, claim.role)?;
-            writeln!(out, "  {}", path.display())?;
-            writeln!(out, "\nthis store already held that claim, unchanged")
+        return Ok(Filed {
+            claim,
+            subject,
+            paths: vec![path],
+            already: true,
+            held: true,
+            known,
         });
     }
 
@@ -362,26 +554,15 @@ fn sign_command(base: &Path, arguments: &[String]) -> Result<u8, Failure> {
         existing.iter().map(|(digest, claim)| (digest, claim)),
     );
 
-    let written = sign::write(store.filesystem(), store.root(), &claim, &stem, &secret)
+    let written = sign::write(store.filesystem(), store.root(), &claim, &stem, secret)
         .map_err(Failure::error)?;
-
-    printing(|out| {
-        writeln!(out, "{} vouches for {subject} as {}", claim.key, claim.role)?;
-        writeln!(out, "  {}", written.claim.display())?;
-        writeln!(out, "  {}", written.signature.display())?;
-        if written.already {
-            writeln!(out, "\nthis store already held that claim, unchanged")?;
-        }
-        match known {
-            Some(who) => writeln!(out, "\nthis copy takes that key to be {who}"),
-            None => writeln!(
-                out,
-                "\nnothing in trust/ speaks for that key, so `verify` here will \
-                 note the claim rather than count it:\n  historica-minisign \
-                 trust add {} \"Your Name <you@example.com>\"",
-                claim.key
-            ),
-        }
+    Ok(Filed {
+        claim,
+        subject,
+        paths: vec![written.claim, written.signature],
+        already: written.already,
+        held: false,
+        known,
     })
 }
 

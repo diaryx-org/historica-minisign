@@ -1,13 +1,21 @@
 ---
 title: Signing a digest it was told about
 description: `sign` resolves a target or falls back to the head; it should also read historica's `historica-wrote-1` statement from stdin and sign what a command just wrote
-status: open
+status: done
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-10-21
 part_of: "[Tasks](tasks.md)"
 ---
 
 # Signing a digest it was told about
+
+**Status: done.** `sign --wrote <path>` reads the statement with historica's
+own `historica::wrote` parser, public since 1.0.0-rc.8, which is what this was
+blocked on, and signs every `revision` line in it. Resolved by `feat(cli): sign
+what a historica command said it wrote`. Its tests in `tests/cli.rs` are
+`sign_vouches_for_what_a_command_said_it_wrote`,
+`sign_reads_a_statement_from_a_file`, the three `a_statement_*` cases, and
+`wrote_is_the_target_and_stands_alone`.
 
 `sign` takes a target — `head`, a bookmark, a change ID or a digest — and
 resolves it against the store (`src/cli/target.rs`), defaulting to the head.

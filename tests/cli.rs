@@ -7,12 +7,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use historica::record::{Clock, Kinds, Platform, Recording, Restriction, record};
 use historica::store::Store;
 use historica::working::Working;
+use historica::wrote::Statement;
 
 const PASSWORD: &str = "not a secret";
 
@@ -55,6 +57,27 @@ fn run(folder: &Path, arguments: &[&str]) -> Output {
         .args(arguments)
         .output()
         .expect("the binary this test crate builds")
+}
+
+/// Run with `input` on stdin, as the far end of a pipe.
+fn piped(folder: &Path, arguments: &[&str], input: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_historica-minisign"))
+        .arg("-C")
+        .arg(folder)
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary this test crate builds");
+    // A command refused at its arguments exits without reading, and the pipe
+    // it closed is no failure of the test's.
+    let _ = child
+        .stdin
+        .take()
+        .expect("its stdin")
+        .write_all(input.as_bytes());
+    child.wait_with_output().expect("it ran")
 }
 
 fn out(folder: &Path, arguments: &[&str]) -> String {
@@ -661,6 +684,226 @@ fn a_file_without_its_content_is_a_usage_error() {
     ] {
         let refused = run(&folder, arguments);
         assert_eq!(refused.status.code(), Some(2), "{arguments:?}");
+    }
+}
+
+/// The revision `work` recorded.
+fn recorded(folder: &Path) -> historica::core::RevisionId {
+    let store = Store::discover(folder).expect("the store");
+    let ids: Vec<_> = store.revisions().map(|(id, _)| *id).collect();
+    assert_eq!(ids.len(), 1, "work records one revision");
+    ids[0]
+}
+
+/// `historica record --fields -m x | historica-minisign sign --wrote -`,
+/// with the statement `record` prints written here by historica's own writer.
+#[test]
+fn sign_vouches_for_what_a_command_said_it_wrote() {
+    let directory = scratch("wrote");
+    let folder = work(&directory);
+    let key = key(&directory);
+    let secret = directory.join("keys/minisign.key");
+    let password = directory.join("password");
+    let revision = recorded(&folder);
+
+    let mut statement = Statement::new();
+    statement.revision(revision).name("main");
+    let signed = piped(
+        &folder,
+        &[
+            "sign",
+            "--wrote",
+            "-",
+            "--key",
+            secret.to_str().unwrap(),
+            "--password-file",
+            password.to_str().unwrap(),
+        ],
+        &statement.to_string(),
+    );
+    let stdout = String::from_utf8_lossy(&signed.stdout);
+    assert!(
+        signed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&signed.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("vouches for {}", revision.abbreviate(12))),
+        "{stdout}"
+    );
+
+    out(
+        &folder,
+        &["trust", "add", &key, "The Test <test@example.com>"],
+    );
+    assert!(
+        run(&folder, &["verify", "--complete"]).status.success(),
+        "the revision the statement named is vouched for"
+    );
+}
+
+/// The same, from a file rather than stdin.
+#[test]
+fn sign_reads_a_statement_from_a_file() {
+    let directory = scratch("wrote-file");
+    let folder = work(&directory);
+    key(&directory);
+    let secret = directory.join("keys/minisign.key");
+    let password = directory.join("password");
+    let wrote = directory.join("wrote.txt");
+    let mut statement = Statement::new();
+    statement.revision(recorded(&folder));
+    fs::write(&wrote, statement.to_string()).expect("a statement");
+
+    out(
+        &folder,
+        &[
+            "sign",
+            "--wrote",
+            wrote.to_str().unwrap(),
+            "--key",
+            secret.to_str().unwrap(),
+            "--password-file",
+            password.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        under(&folder.join("history/claims"))
+            .iter()
+            .filter(|path| path.to_string_lossy().ends_with(".claim.txt"))
+            .count(),
+        1
+    );
+}
+
+/// Decision 0074's most useful case: a command that wrote nothing says so, and
+/// a wrapper piping it here does nothing at all — not even ask for a password.
+#[test]
+fn a_statement_of_nothing_signs_nothing_and_succeeds() {
+    let directory = scratch("wrote-nothing");
+    let folder = work(&directory);
+
+    for statement in [
+        "historica-wrote-1\n".to_owned(),
+        format!("historica-wrote-1\nname main\ngone {}\n", recorded(&folder)),
+    ] {
+        let signed = piped(
+            &folder,
+            &["sign", "--wrote", "-", "--key", "/nonexistent/minisign.key"],
+            &statement,
+        );
+        assert_eq!(
+            signed.status.code(),
+            Some(0),
+            "{statement:?}: {}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
+        assert!(under(&folder.join("history/claims")).is_empty());
+    }
+}
+
+/// A statement this build cannot read is discarded whole, per 0074: nothing is
+/// signed, and the exit says so.
+#[test]
+fn a_statement_it_cannot_read_signs_nothing_and_fails() {
+    let directory = scratch("wrote-unknown");
+    let folder = work(&directory);
+    key(&directory);
+    let secret = directory.join("keys/minisign.key");
+    let password = directory.join("password");
+    let revision = recorded(&folder);
+
+    for statement in [
+        format!("historica-wrote-1\nrevision {revision}\nmoved a b\n"),
+        format!("historica-wrote-2\nrevision {revision}\n"),
+        String::new(),
+    ] {
+        let refused = piped(
+            &folder,
+            &[
+                "sign",
+                "--wrote",
+                "-",
+                "--key",
+                secret.to_str().unwrap(),
+                "--password-file",
+                password.to_str().unwrap(),
+            ],
+            &statement,
+        );
+        assert_eq!(refused.status.code(), Some(1), "{statement:?}");
+        assert!(
+            under(&folder.join("history/claims")).is_empty(),
+            "{statement:?}: nothing was written"
+        );
+    }
+}
+
+/// A revision the store does not hold is refused before anything is signed,
+/// including the revisions beside it that it does hold.
+#[test]
+fn a_statement_naming_a_revision_not_here_signs_nothing() {
+    let directory = scratch("wrote-elsewhere");
+    let folder = work(&directory);
+    key(&directory);
+    let secret = directory.join("keys/minisign.key");
+    let password = directory.join("password");
+    let elsewhere = "00000000000000000000000000000000000000000000000000000000000000aa";
+
+    let refused = piped(
+        &folder,
+        &[
+            "sign",
+            "--wrote",
+            "-",
+            "--key",
+            secret.to_str().unwrap(),
+            "--password-file",
+            password.to_str().unwrap(),
+        ],
+        &format!(
+            "historica-wrote-1\nrevision {}\nrevision {elsewhere}\n",
+            recorded(&folder)
+        ),
+    );
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("does not hold"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(under(&folder.join("history/claims")).is_empty());
+}
+
+#[test]
+fn wrote_is_the_target_and_stands_alone() {
+    let directory = scratch("wrote-alone");
+    let folder = work(&directory);
+
+    for (arguments, said) in [
+        (&["sign", "head", "--wrote", "-"][..], "is the target"),
+        (
+            &[
+                "sign",
+                "--wrote",
+                "-",
+                "--file",
+                "notes.txt",
+                "--content",
+                "sha256:00",
+            ][..],
+            "one file",
+        ),
+        (
+            &["sign", "--wrote", "-", "--password-file", "-"][..],
+            "stdin",
+        ),
+        (&["sign", "--wrote"][..], "wants a value"),
+    ] {
+        let refused = piped(&folder, arguments, "historica-wrote-1\n");
+        assert_eq!(refused.status.code(), Some(2), "{arguments:?}");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains(said), "{arguments:?}: {stderr}");
     }
 }
 

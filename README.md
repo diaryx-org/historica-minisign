@@ -47,6 +47,22 @@ digest pins its bytes, which pin its parents' digests, and so on to the roots �
 so signing the head signs the history behind it, and signing every revision is
 a choice rather than a requirement.
 
+What it is meant to sign is what a `historica` command just wrote. Run with
+`--fields`, a writing command prints a `historica-wrote-1` statement of what it
+wrote ([historica's decision 0074](https://github.com/diaryx-org/historica/blob/main/docs/decisions/0074-saying-where-to-look.md)),
+and `sign --wrote -` signs every revision that statement names:
+
+```console
+$ historica record --fields -m 'note' | historica-minisign sign --wrote -
+RWQq6vJVR0z0KLGfXKp1a2mYlUB0kUZC8oXbEPu29z1DnKUB0FdrRhJs vouches for 2160886dffb6 as author
+  history/claims/2026-10/2026-10-21 note — author.claim.txt
+  history/claims/2026-10/2026-10-21 note — author.claim.txt.minisig
+```
+
+So signing every capture is a one-line alias. A command that wrote nothing
+says so, and then nothing is signed and nothing is asked for; a statement this
+build cannot read is refused whole, and nothing is signed either.
+
 A claim can also be narrower: one file as it stood at a revision, naming that
 file's content digest, which is what a reviewer who read one document can
 honestly sign.
