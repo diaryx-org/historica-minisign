@@ -2,8 +2,9 @@
 title: Tasks
 description: Deferred work in historica-minisign — one file each, every one with a done state
 created: 2026-09-02
-updated: 2026-10-21
-contents: []
+updated: 2026-11-08
+contents:
+  - "[A link to write renders as brackets](a-link-to-write-renders-as-brackets.md)"
 ---
 
 # Tasks
