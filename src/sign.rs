@@ -183,7 +183,7 @@ pub fn statement_for(
 /// with its signature beside it.
 ///
 /// `stem` is [`crate::naming::statement_stem`]'s answer, for the reason
-/// [`write`] gives.
+/// [`write()`] gives.
 pub fn write_statement<F: Filesystem + ?Sized>(
     files: &F,
     root: &Path,
