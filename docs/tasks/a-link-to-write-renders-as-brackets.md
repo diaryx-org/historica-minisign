@@ -1,13 +1,17 @@
 ---
 title: A link to write renders as brackets
 description: '`write_statement`''s doc links to `[`write`]`, which rustdoc cannot tell from the `write!` macro, so the page shows the brackets instead of a link; CI runs no `cargo doc`, so nothing reports it'
-status: open
+status: done
 created: 2026-11-08
-updated: 2026-11-08
+updated: 2026-11-09
 part_of: "[Tasks](tasks.md)"
 ---
 
 # A link to write renders as brackets
+
+**Status: done**, by `fix(docs): link write_statement's doc to sign::write`.
+The link is ``[`write()`]``, and `.config/ship.figl` has a `doc` job,
+fs-transaction's, so a link that names no one item fails CI.
 
 `sign::write_statement`'s doc comment (`src/sign.rs`, line 186) ends
 "for the reason [`write`] gives", meaning `sign::write`. The prelude also
